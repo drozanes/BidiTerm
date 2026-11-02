@@ -3,6 +3,7 @@ import AppKit
 public final class TerminalLine {
     public var cells: [TerminalCell]
     public var cachedAttributedString: NSAttributedString?
+    public var isCachedRTL: Bool = false
 
     public init(length: Int = 0) {
         self.cells = Array(repeating: TerminalCell(), count: length)
@@ -10,6 +11,7 @@ public final class TerminalLine {
 
     public func invalidateCache() {
         cachedAttributedString = nil
+        isCachedRTL = false
     }
 
     public func ensureCapacity(_ capacity: Int) {

@@ -22,6 +22,7 @@ public final class TerminalView: NSView {
     private var charWidth: CGFloat = 8.0
 
     private let paddingLeft: CGFloat = 10.0
+    private let paddingRight: CGFloat = 10.0
     private let paddingTop: CGFloat = 10.0
 
     // Selection
@@ -98,7 +99,7 @@ public final class TerminalView: NSView {
     }
 
     public func notifyResize() {
-        let availableWidth = bounds.width - (paddingLeft * 2)
+        let availableWidth = bounds.width - (paddingLeft + paddingRight)
         let availableHeight = bounds.height - (paddingTop * 2)
 
         let cols = max(20, Int(availableWidth / charWidth))
@@ -127,27 +128,29 @@ public final class TerminalView: NSView {
         let bottomIndex = max(0, totalLines - 1 - scrollOffset)
         let startIndex = max(0, bottomIndex - visibleRows + 1)
 
-        let styleParagraph = NSMutableParagraphStyle()
-        styleParagraph.baseWritingDirection = .leftToRight
-
         for row in 0..<visibleRows {
             let lineIdx = startIndex + row
             let y = paddingTop + CGFloat(row) * lineHeight
 
             var drawnCTLine: CTLine?
             var lineAttrLen = 0
+            var lineX: CGFloat = paddingLeft
+            var isLineRTL = false
 
             if let line = buffer.line(at: lineIdx) {
-                let attrString = buildAttributedString(for: line, pStyle: styleParagraph)
+                let (attrString, isRTL) = buildAttributedString(for: line)
                 lineAttrLen = attrString.length
+                isLineRTL = isRTL
 
                 if lineAttrLen > 0 {
                     let ctLine = CTLineCreateWithAttributedString(attrString)
                     drawnCTLine = ctLine
+                    let lineWidth = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
+                    lineX = isRTL ? max(paddingLeft, bounds.width - paddingRight - lineWidth) : paddingLeft
 
                     context.saveGState()
                     context.textMatrix = .identity
-                    context.translateBy(x: paddingLeft, y: y + fontAscent)
+                    context.translateBy(x: lineX, y: y + fontAscent)
                     context.scaleBy(x: 1.0, y: -1.0)
                     CTLineDraw(ctLine, context)
                     context.restoreGState()
@@ -156,19 +159,47 @@ public final class TerminalView: NSView {
 
             // Draw Cursor
             if scrollOffset == 0 && row == buffer.cursorRow && buffer.cursorVisible {
-                drawCursor(context: context, ctLine: drawnCTLine, rowY: y, lineLen: lineAttrLen)
+                drawCursor(context: context, ctLine: drawnCTLine, lineX: lineX, isRTL: isLineRTL, rowY: y, lineLen: lineAttrLen)
             }
         }
     }
 
-    private func buildAttributedString(for line: TerminalLine, pStyle: NSParagraphStyle) -> NSAttributedString {
-        if let cached = line.cachedAttributedString {
-            return cached
+    private func isRTLLine(_ line: TerminalLine) -> Bool {
+        for cell in line.cells {
+            for scalar in cell.char.unicodeScalars {
+                let val = scalar.value
+                // Skip neutrals, whitespace, ASCII symbols, numbers, bullets, brackets
+                if val <= 0x0040 || (val >= 0x005B && val <= 0x0060) || (val >= 0x007B && val <= 0x007E) || val == 0x2022 {
+                    continue
+                }
+                // Hebrew & Arabic ranges
+                if (val >= 0x0590 && val <= 0x05FF) || (val >= 0x0600 && val <= 0x06FF) || (val >= 0xFB1D && val <= 0xFB4F) {
+                    return true
+                }
+                // Latin / ASCII letters
+                if (val >= 0x0041 && val <= 0x005A) || (val >= 0x0061 && val <= 0x007A) {
+                    return false
+                }
+            }
         }
+        return false
+    }
+
+    private func buildAttributedString(for line: TerminalLine) -> (attrString: NSAttributedString, isRTL: Bool) {
+        if let cached = line.cachedAttributedString {
+            return (cached, line.isCachedRTL)
+        }
+
+        let isRTL = isRTLLine(line)
+        line.isCachedRTL = isRTL
+
+        let pStyle = NSMutableParagraphStyle()
+        pStyle.baseWritingDirection = isRTL ? .rightToLeft : .leftToRight
 
         let result = NSMutableAttributedString()
         guard !line.cells.isEmpty else {
-            return result
+            line.cachedAttributedString = result
+            return (result, isRTL)
         }
 
         var lastNonSpace = -1
@@ -182,19 +213,10 @@ public final class TerminalView: NSView {
 
         guard lastNonSpace >= 0 else {
             line.cachedAttributedString = result
-            return result
+            return (result, isRTL)
         }
 
-        let relevantCells = Array(line.cells[0...lastNonSpace])
-
-        // Add Left-to-Right Override marker (\u{202D}) so terminal cells
-        // render sequentially in natural left-to-right grid order
-        let lroAttr: [NSAttributedString.Key: Any] = [
-            .paragraphStyle: pStyle,
-            .font: font
-        ]
-        result.append(NSAttributedString(string: "\u{202D}", attributes: lroAttr))
-
+        let relevantCells = line.cells[0...lastNonSpace]
         var currentChars = ""
         var currentStyle = relevantCells[0].style
 
@@ -211,11 +233,8 @@ public final class TerminalView: NSView {
             appendRun(chars: currentChars, style: currentStyle, pStyle: pStyle, to: result)
         }
 
-        // Close Left-to-Right Override with Pop Directional Formatting (\u{202C})
-        result.append(NSAttributedString(string: "\u{202C}", attributes: lroAttr))
-
         line.cachedAttributedString = result
-        return result
+        return (result, isRTL)
     }
 
     private func appendRun(chars: String, style: TerminalStyle, pStyle: NSParagraphStyle, to result: NSMutableAttributedString) {
@@ -243,26 +262,25 @@ public final class TerminalView: NSView {
         result.append(NSAttributedString(string: chars, attributes: attrs))
     }
 
-    private func drawCursor(context: CGContext, ctLine: CTLine?, rowY: CGFloat, lineLen: Int) {
+    private func drawCursor(context: CGContext, ctLine: CTLine?, lineX: CGFloat, isRTL: Bool, rowY: CGFloat, lineLen: Int) {
         guard cursorBlinkState else { return }
 
-        var cursorX: CGFloat = paddingLeft
+        var cursorX: CGFloat = lineX
         let targetCol = buffer.cursorCol
 
-        if let ctLine = ctLine, lineLen > 2 {
-            let maxCol = lineLen - 2 // excluding \u{202D} and \u{202C}
-            if targetCol <= maxCol {
+        if let ctLine = ctLine, lineLen > 0 {
+            if targetCol <= lineLen {
                 var secondary: CGFloat = 0
-                // targetCol maps to index (targetCol + 1) because of leading \u{202D}
-                let offset = CTLineGetOffsetForStringIndex(ctLine, targetCol + 1, &secondary)
-                cursorX += offset
+                let offset = CTLineGetOffsetForStringIndex(ctLine, targetCol, &secondary)
+                cursorX = lineX + (isRTL ? (offset - charWidth) : offset)
             } else {
                 var secondary: CGFloat = 0
-                let offset = CTLineGetOffsetForStringIndex(ctLine, maxCol + 1, &secondary)
-                cursorX += offset + CGFloat(targetCol - maxCol) * charWidth
+                let offset = CTLineGetOffsetForStringIndex(ctLine, lineLen, &secondary)
+                let extra = CGFloat(targetCol - lineLen) * charWidth
+                cursorX = lineX + (isRTL ? (offset - charWidth - extra) : (offset + extra))
             }
         } else {
-            cursorX += CGFloat(targetCol) * charWidth
+            cursorX = isRTL ? (bounds.width - paddingRight - CGFloat(targetCol + 1) * charWidth) : (paddingLeft + CGFloat(targetCol) * charWidth)
         }
 
         let cursorRect = NSRect(x: cursorX, y: rowY + 2, width: charWidth, height: lineHeight - 2)
@@ -445,6 +463,41 @@ public final class TerminalView: NSView {
         ptySession?.write(string: combined)
         resetScroll()
         return true
+    }
+
+    // MARK: - Mouse Events & Selection
+
+    override public func mouseDown(with event: NSEvent) {
+        let pt = convert(event.locationInWindow, from: nil)
+        let row = Int((pt.y - paddingTop) / lineHeight)
+        let col = max(0, Int((pt.x - paddingLeft) / charWidth))
+        let totalLines = buffer.totalLineCount
+        let bottomIndex = max(0, totalLines - 1 - scrollOffset)
+        let startIndex = max(0, bottomIndex - buffer.rows + 1)
+        let lineIdx = startIndex + row
+
+        selectionStart = (row: lineIdx, col: col)
+        selectionEnd = selectionStart
+        isSelecting = true
+        needsDisplay = true
+    }
+
+    override public func mouseDragged(with event: NSEvent) {
+        guard isSelecting else { return }
+        let pt = convert(event.locationInWindow, from: nil)
+        let row = Int((pt.y - paddingTop) / lineHeight)
+        let col = max(0, Int((pt.x - paddingLeft) / charWidth))
+        let totalLines = buffer.totalLineCount
+        let bottomIndex = max(0, totalLines - 1 - scrollOffset)
+        let startIndex = max(0, bottomIndex - buffer.rows + 1)
+        let lineIdx = startIndex + row
+
+        selectionEnd = (row: lineIdx, col: col)
+        needsDisplay = true
+    }
+
+    override public func mouseUp(with event: NSEvent) {
+        isSelecting = false
     }
 
     // MARK: - Scrolling
