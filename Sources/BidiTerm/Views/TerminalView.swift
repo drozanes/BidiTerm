@@ -4,6 +4,7 @@ import CoreText
 public final class TerminalView: NSView {
     public var ptySession: PTYSession?
     public let buffer: TerminalBuffer
+    public weak var windowController: MainWindowController?
 
     public var fontSize: CGFloat = 14.0 {
         didSet {
@@ -30,6 +31,23 @@ public final class TerminalView: NSView {
     private var selectionStart: (row: Int, col: Int)?
     private var selectionEnd: (row: Int, col: Int)?
     private var isSelecting: Bool = false
+
+    // Search highlights
+    public var searchMatches: [SearchMatch] = [] {
+        didSet {
+            needsDisplay = true
+        }
+    }
+    public var activeSearchMatchIndex: Int = 0 {
+        didSet {
+            needsDisplay = true
+        }
+    }
+
+    // Path Hover & Cmd+Click
+    private var hoveredPath: DetectedPath?
+    private var hoveredLocation: (lineIdx: Int, range: Range<Int>)?
+    private var trackingArea: NSTrackingArea?
 
     // Scroll offset (0 = viewing bottom of buffer)
     public var scrollOffset: Int = 0 {
@@ -119,6 +137,16 @@ public final class TerminalView: NSView {
         notifyResize()
     }
 
+    override public func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        let options: NSTrackingArea.Options = [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow]
+        trackingArea = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
+        addTrackingArea(trackingArea!)
+    }
+
     public func notifyResize() {
         let availableWidth = bounds.width - (paddingLeft + paddingRight)
         let availableHeight = bounds.height - (paddingTop * 2)
@@ -131,6 +159,21 @@ public final class TerminalView: NSView {
             ptySession?.resize(cols: UInt16(cols), rows: UInt16(rows))
             needsDisplay = true
         }
+    }
+
+    public func getCwd() -> String? {
+        if let pty = ptySession, pty.pid > 0 {
+            return PathDetector.getProcessCwd(pid: pty.pid)
+        }
+        return nil
+    }
+
+    public func scrollToLine(index: Int) {
+        let total = buffer.totalLineCount
+        let visible = buffer.rows
+        let targetBottom = min(total - 1, max(visible - 1, index + visible / 2))
+        scrollOffset = max(0, total - 1 - targetBottom)
+        needsDisplay = true
     }
 
     // MARK: - Drawing
@@ -179,12 +222,64 @@ public final class TerminalView: NSView {
                     let lineWidth = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
                     lineX = isRTL ? max(paddingLeft, bounds.width - paddingRight - lineWidth) : paddingLeft
 
+                    // 1. Draw Search Highlights behind text
+                    if !searchMatches.isEmpty {
+                        for (mIdx, match) in searchMatches.enumerated() {
+                            if match.lineIndex == lineIdx {
+                                let isActive = (mIdx == activeSearchMatchIndex)
+                                var minX: CGFloat = lineX + CGFloat(match.range.lowerBound) * charWidth
+                                var matchW: CGFloat = CGFloat(match.range.count) * charWidth
+
+                                var sec: CGFloat = 0
+                                let idx1 = min(lineAttrLen, match.range.lowerBound)
+                                let idx2 = min(lineAttrLen, match.range.upperBound)
+                                let off1 = CTLineGetOffsetForStringIndex(ctLine, idx1, &sec)
+                                let off2 = CTLineGetOffsetForStringIndex(ctLine, idx2, &sec)
+                                minX = lineX + min(off1, off2)
+                                matchW = max(charWidth, abs(off2 - off1))
+
+                                let matchRect = NSRect(x: minX, y: y + 2, width: matchW, height: lineHeight - 2)
+                                context.setFillColor((isActive ? TerminalPalette.activeSearchHighlight : TerminalPalette.searchHighlight).cgColor)
+                                let path = CGPath(roundedRect: matchRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+                                context.addPath(path)
+                                context.fillPath()
+                            }
+                        }
+                    }
+
+                    // 2. Draw Selection Highlight behind text
+                    if let (start, end) = normalizedSelection(), lineIdx >= start.row && lineIdx <= end.row {
+                        let startCol = (lineIdx == start.row) ? start.col : 0
+                        let endCol = (lineIdx == end.row) ? end.col : buffer.cols
+                        let selX = lineX + CGFloat(startCol) * charWidth
+                        let selW = CGFloat(max(1, endCol - startCol)) * charWidth
+                        context.setFillColor(TerminalPalette.selectionColor.cgColor)
+                        context.fill(NSRect(x: selX, y: y + 1, width: selW, height: lineHeight - 2))
+                    }
+
+                    // 3. Draw Text
                     context.saveGState()
                     context.textMatrix = .identity
                     context.translateBy(x: lineX, y: y + fontAscent)
                     context.scaleBy(x: 1.0, y: -1.0)
                     CTLineDraw(ctLine, context)
                     context.restoreGState()
+
+                    // 4. Draw Cmd+Hover Path Underline
+                    if let (hoverLine, hoverRange) = hoveredLocation, hoverLine == lineIdx {
+                        var minX: CGFloat = lineX + CGFloat(hoverRange.lowerBound) * charWidth
+                        var matchW: CGFloat = CGFloat(hoverRange.count) * charWidth
+                        var sec: CGFloat = 0
+                        let idx1 = min(lineAttrLen, hoverRange.lowerBound)
+                        let idx2 = min(lineAttrLen, hoverRange.upperBound)
+                        let off1 = CTLineGetOffsetForStringIndex(ctLine, idx1, &sec)
+                        let off2 = CTLineGetOffsetForStringIndex(ctLine, idx2, &sec)
+                        minX = lineX + min(off1, off2)
+                        matchW = max(charWidth, abs(off2 - off1))
+
+                        context.setFillColor(NSColor(srgbRed: 0.45, green: 0.75, blue: 1.0, alpha: 0.90).cgColor)
+                        context.fill(NSRect(x: minX, y: y + lineHeight - 2, width: matchW, height: 1.5))
+                    }
                 }
             }
 
@@ -199,15 +294,12 @@ public final class TerminalView: NSView {
         for cell in line.cells {
             for scalar in cell.char.unicodeScalars {
                 let val = scalar.value
-                // Skip neutrals, whitespace, ASCII symbols, numbers, bullets, brackets
                 if val <= 0x0040 || (val >= 0x005B && val <= 0x0060) || (val >= 0x007B && val <= 0x007E) || val == 0x2022 {
                     continue
                 }
-                // Hebrew & Arabic ranges
                 if (val >= 0x0590 && val <= 0x05FF) || (val >= 0x0600 && val <= 0x06FF) || (val >= 0xFB1D && val <= 0xFB4F) {
                     return true
                 }
-                // Latin / ASCII letters
                 if (val >= 0x0041 && val <= 0x005A) || (val >= 0x0061 && val <= 0x007A) {
                     return false
                 }
@@ -325,8 +417,51 @@ public final class TerminalView: NSView {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
         // Handle Command shortcuts
-        if flags.contains(.command) {
+        if flags.contains(.command) && !flags.contains([.control]) {
+            // Command + Shift shortcuts
+            if flags.contains(.shift) {
+                switch event.charactersIgnoringModifiers?.lowercased() {
+                case "c", "s":
+                    handleScreenshotCapture()
+                    return
+                case "o":
+                    revealSelectedPathInFinder()
+                    return
+                case "[":
+                    windowController?.selectPreviousTab()
+                    return
+                case "]":
+                    windowController?.selectNextTab()
+                    return
+                case "g":
+                    windowController?.searchBarDidRequestPreviousMatch(windowController!.searchBarView)
+                    return
+                default:
+                    break
+                }
+            }
+
             switch event.charactersIgnoringModifiers {
+            case "t":
+                windowController?.createNewTab()
+                return
+            case "w":
+                windowController?.closeCurrentTab()
+                return
+            case "f":
+                windowController?.toggleSearchBar()
+                return
+            case "g":
+                windowController?.searchBarDidRequestNextMatch(windowController!.searchBarView)
+                return
+            case "/":
+                ShortcutsWindowController.shared.toggle()
+                return
+            case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+                if let num = Int(event.charactersIgnoringModifiers ?? "") {
+                    windowController?.selectTab(at: num - 1)
+                    return
+                }
             case "v":
                 handlePaste()
                 return
@@ -350,14 +485,6 @@ public final class TerminalView: NSView {
                 break
             }
 
-            // Command + Shift shortcuts
-            if flags.contains([.command, .shift]) {
-                if event.charactersIgnoringModifiers == "C" || event.charactersIgnoringModifiers == "c" ||
-                   event.charactersIgnoringModifiers == "S" || event.charactersIgnoringModifiers == "s" {
-                    handleScreenshotCapture()
-                    return
-                }
-            }
             super.keyDown(with: event)
             return
         }
@@ -473,6 +600,29 @@ public final class TerminalView: NSView {
         }
     }
 
+    public func revealSelectedPathInFinder() {
+        if let (start, end) = normalizedSelection() {
+            var selectedText = ""
+            for r in start.row...end.row {
+                guard let line = buffer.line(at: r) else { continue }
+                let lineChars = line.cells.map { $0.char }
+                let cStart = (r == start.row) ? start.col : 0
+                let cEnd = (r == end.row) ? min(end.col, lineChars.count - 1) : lineChars.count - 1
+                if cStart <= cEnd && cStart < lineChars.count {
+                    selectedText += String(lineChars[cStart...cEnd])
+                }
+            }
+            let trimmed = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let path = PathDetector.detectPath(candidate: trimmed, cwd: getCwd()) {
+                NSWorkspace.shared.activateFileViewerSelecting([path.targetURL])
+                return
+            }
+        }
+        if let cwd = getCwd() {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cwd)])
+        }
+    }
+
     // MARK: - Drag and Drop
 
     override public func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -496,7 +646,50 @@ public final class TerminalView: NSView {
         return true
     }
 
-    // MARK: - Mouse Events & Selection
+    // MARK: - Mouse Events, Hover & Cmd+Click
+
+    override public func mouseMoved(with event: NSEvent) {
+        if event.modifierFlags.contains(.command) {
+            let pt = convert(event.locationInWindow, from: nil)
+            let row = Int((pt.y - paddingTop) / lineHeight)
+            let col = max(0, Int((pt.x - paddingLeft) / charWidth))
+            let totalLines = buffer.totalLineCount
+            let bottomIndex = max(0, totalLines - 1 - scrollOffset)
+            let startIndex = max(0, bottomIndex - buffer.rows + 1)
+            let lineIdx = startIndex + row
+
+            if let line = buffer.line(at: lineIdx),
+               let token = PathDetector.extractToken(on: line.trimmedText, at: col),
+               let detected = PathDetector.detectPath(candidate: token, cwd: getCwd()) {
+                hoveredPath = detected
+                if let range = line.trimmedText.range(of: token) {
+                    let startCol = line.trimmedText.distance(from: line.trimmedText.startIndex, to: range.lowerBound)
+                    let endCol = line.trimmedText.distance(from: line.trimmedText.startIndex, to: range.upperBound)
+                    hoveredLocation = (lineIdx, startCol..<endCol)
+                }
+                NSCursor.pointingHand.set()
+                needsDisplay = true
+                return
+            }
+        }
+
+        if hoveredPath != nil {
+            hoveredPath = nil
+            hoveredLocation = nil
+            NSCursor.iBeam.set()
+            needsDisplay = true
+        }
+    }
+
+    override public func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        if !event.modifierFlags.contains(.command) && hoveredPath != nil {
+            hoveredPath = nil
+            hoveredLocation = nil
+            NSCursor.iBeam.set()
+            needsDisplay = true
+        }
+    }
 
     override public func mouseDown(with event: NSEvent) {
         let pt = convert(event.locationInWindow, from: nil)
@@ -507,6 +700,23 @@ public final class TerminalView: NSView {
         let startIndex = max(0, bottomIndex - buffer.rows + 1)
         let lineIdx = startIndex + row
 
+        // Check Cmd + Click to open file/URL or reveal in Finder
+        if event.modifierFlags.contains(.command) {
+            if let line = buffer.line(at: lineIdx),
+               let token = PathDetector.extractToken(on: line.trimmedText, at: col),
+               let detected = PathDetector.detectPath(candidate: token, cwd: getCwd()) {
+                if event.modifierFlags.contains(.option) {
+                    // Cmd + Option + Click -> Reveal in Finder
+                    NSWorkspace.shared.activateFileViewerSelecting([detected.targetURL])
+                } else {
+                    // Cmd + Click -> Open in Default Application / Browser
+                    NSWorkspace.shared.open(detected.targetURL)
+                }
+                return
+            }
+        }
+
+        // Standard Selection
         selectionStart = (row: lineIdx, col: col)
         selectionEnd = selectionStart
         isSelecting = true
@@ -529,6 +739,68 @@ public final class TerminalView: NSView {
 
     override public func mouseUp(with event: NSEvent) {
         isSelecting = false
+    }
+
+    // Contextual Right-Click Menu
+    override public func menu(for event: NSEvent) -> NSMenu? {
+        let pt = convert(event.locationInWindow, from: nil)
+        let row = Int((pt.y - paddingTop) / lineHeight)
+        let col = max(0, Int((pt.x - paddingLeft) / charWidth))
+        let totalLines = buffer.totalLineCount
+        let bottomIndex = max(0, totalLines - 1 - scrollOffset)
+        let startIndex = max(0, bottomIndex - buffer.rows + 1)
+        let lineIdx = startIndex + row
+
+        let contextMenu = NSMenu(title: "Terminal")
+
+        if let line = buffer.line(at: lineIdx),
+           let token = PathDetector.extractToken(on: line.trimmedText, at: col),
+           let detected = PathDetector.detectPath(candidate: token, cwd: getCwd()) {
+            let openItem = NSMenuItem(title: "Open \"\(token)\"", action: #selector(contextOpenPath(_:)), keyEquivalent: "")
+            openItem.representedObject = detected.targetURL
+            openItem.target = self
+            contextMenu.addItem(openItem)
+
+            let revealItem = NSMenuItem(title: "Reveal in Finder", action: #selector(contextRevealPath(_:)), keyEquivalent: "")
+            revealItem.representedObject = detected.targetURL
+            revealItem.target = self
+            contextMenu.addItem(revealItem)
+
+            let copyPathItem = NSMenuItem(title: "Copy Path", action: #selector(contextCopyPath(_:)), keyEquivalent: "")
+            copyPathItem.representedObject = detected.targetURL.path
+            copyPathItem.target = self
+            contextMenu.addItem(copyPathItem)
+
+            contextMenu.addItem(NSMenuItem.separator())
+        }
+
+        contextMenu.addItem(withTitle: "Copy", action: #selector(MainWindowController.copyAction(_:)), keyEquivalent: "c")
+        contextMenu.addItem(withTitle: "Paste", action: #selector(MainWindowController.pasteAction(_:)), keyEquivalent: "v")
+        contextMenu.addItem(withTitle: "Find...", action: #selector(MainWindowController.toggleSearchAction(_:)), keyEquivalent: "f")
+        contextMenu.addItem(NSMenuItem.separator())
+        contextMenu.addItem(withTitle: "Keyboard Shortcuts...", action: #selector(MainWindowController.showShortcutsAction(_:)), keyEquivalent: "/")
+
+        return contextMenu
+    }
+
+    @objc private func contextOpenPath(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? URL {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func contextRevealPath(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? URL {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
+    @objc private func contextCopyPath(_ sender: NSMenuItem) {
+        if let path = sender.representedObject as? String {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(path, forType: .string)
+        }
     }
 
     // MARK: - Scrolling

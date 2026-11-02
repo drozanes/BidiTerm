@@ -40,6 +40,8 @@ public enum TerminalPalette {
     public static let defaultBackground = NSColor(srgbRed: 0.10, green: 0.11, blue: 0.13, alpha: 1.0) // Rich dark slate
     public static let cursorColor = NSColor(srgbRed: 0.45, green: 0.75, blue: 1.0, alpha: 0.95)      // Crisp neon cyan/blue
     public static let selectionColor = NSColor(srgbRed: 0.25, green: 0.38, blue: 0.60, alpha: 0.50)
+    public static let searchHighlight = NSColor(srgbRed: 0.95, green: 0.75, blue: 0.20, alpha: 0.45)
+    public static let activeSearchHighlight = NSColor(srgbRed: 1.00, green: 0.60, blue: 0.10, alpha: 0.85)
 
     // Standard 16 ANSI colors
     public static let standardColors: [NSColor] = [

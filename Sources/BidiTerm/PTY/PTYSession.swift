@@ -11,6 +11,7 @@ public final class PTYSession {
 
     private var masterFd: Int32 = -1
     private var childPid: pid_t = -1
+    public var pid: pid_t { return childPid }
     private var readSource: DispatchSourceRead?
     private let readQueue = DispatchQueue(label: "com.biditerm.pty.read", qos: .userInteractive)
 

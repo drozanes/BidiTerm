@@ -1,5 +1,17 @@
 import AppKit
 
+public struct SearchMatch: Equatable {
+    public let lineIndex: Int
+    public let range: Range<Int> // column range [start..<end]
+    public let text: String
+
+    public init(lineIndex: Int, range: Range<Int>, text: String) {
+        self.lineIndex = lineIndex
+        self.range = range
+        self.text = text
+    }
+}
+
 public final class TerminalLine {
     public var cells: [TerminalCell]
     public var cachedAttributedString: NSAttributedString?
@@ -150,6 +162,29 @@ public final class TerminalBuffer {
             guard absoluteIndex >= 0 && absoluteIndex < mainLines.count else { return nil }
             return mainLines[absoluteIndex]
         }
+    }
+
+    public func search(query: String, caseSensitive: Bool = false) -> [SearchMatch] {
+        guard !query.isEmpty else { return [] }
+        var matches: [SearchMatch] = []
+        let total = totalLineCount
+        let q = caseSensitive ? query : query.lowercased()
+
+        for idx in 0..<total {
+            guard let line = line(at: idx) else { continue }
+            let lineText = line.trimmedText
+            let searchText = caseSensitive ? lineText : lineText.lowercased()
+
+            var searchStart = searchText.startIndex
+            while searchStart < searchText.endIndex,
+                  let foundRange = searchText.range(of: q, range: searchStart..<searchText.endIndex) {
+                let startCol = searchText.distance(from: searchText.startIndex, to: foundRange.lowerBound)
+                let endCol = searchText.distance(from: searchText.startIndex, to: foundRange.upperBound)
+                matches.append(SearchMatch(lineIndex: idx, range: startCol..<endCol, text: String(lineText[foundRange])))
+                searchStart = foundRange.upperBound
+            }
+        }
+        return matches
     }
 
     /// The index where visible rows begin (for scroll calculation)

@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupMenu() {
         let mainMenu = NSMenu()
 
-        // Application Menu
+        // 1. Application Menu
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
@@ -32,7 +32,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit BidiTerm", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
-        // Edit Menu
+        // 2. File Menu (Tabs)
+        let fileMenuItem = NSMenuItem()
+        mainMenu.addItem(fileMenuItem)
+        let fileMenu = NSMenu(title: "File")
+        fileMenuItem.submenu = fileMenu
+        fileMenu.addItem(withTitle: "New Tab", action: #selector(MainWindowController.newTabAction(_:)), keyEquivalent: "t")
+        fileMenu.addItem(withTitle: "Close Tab", action: #selector(MainWindowController.closeTabAction(_:)), keyEquivalent: "w")
+
+        // 3. Edit Menu
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: "Edit")
@@ -42,17 +50,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let screenshotItem = NSMenuItem(title: "Capture Screenshot to Terminal", action: #selector(MainWindowController.captureScreenshotAction(_:)), keyEquivalent: "c")
         screenshotItem.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(screenshotItem)
-        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(withTitle: "Find in Terminal...", action: #selector(MainWindowController.toggleSearchAction(_:)), keyEquivalent: "f")
 
-        // Window Menu
+        // 4. View Menu
+        let viewMenuItem = NSMenuItem()
+        mainMenu.addItem(viewMenuItem)
+        let viewMenu = NSMenu(title: "View")
+        viewMenuItem.submenu = viewMenu
+        viewMenu.addItem(withTitle: "Bigger Font", action: #selector(zoomInAction(_:)), keyEquivalent: "+")
+        viewMenu.addItem(withTitle: "Smaller Font", action: #selector(zoomOutAction(_:)), keyEquivalent: "-")
+        viewMenu.addItem(withTitle: "Default Font Size", action: #selector(zoomResetAction(_:)), keyEquivalent: "0")
+
+        // 5. Window Menu
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)
         let windowMenu = NSMenu(title: "Window")
         windowMenuItem.submenu = windowMenu
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(NSMenuItem.separator())
+
+        let nextTabItem = NSMenuItem(title: "Select Next Tab", action: #selector(nextTabAction(_:)), keyEquivalent: "]")
+        nextTabItem.keyEquivalentModifierMask = [.command, .shift]
+        windowMenu.addItem(nextTabItem)
+
+        let prevTabItem = NSMenuItem(title: "Select Previous Tab", action: #selector(prevTabAction(_:)), keyEquivalent: "[")
+        prevTabItem.keyEquivalentModifierMask = [.command, .shift]
+        windowMenu.addItem(prevTabItem)
+
+        // 6. Help Menu
+        let helpMenuItem = NSMenuItem()
+        mainMenu.addItem(helpMenuItem)
+        let helpMenu = NSMenu(title: "Help")
+        helpMenuItem.submenu = helpMenu
+        helpMenu.addItem(withTitle: "Keyboard Shortcuts", action: #selector(MainWindowController.showShortcutsAction(_:)), keyEquivalent: "/")
 
         NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func zoomInAction(_ sender: Any?) {
+        if let view = windowController?.activeTab?.terminalView {
+            view.fontSize = min(32.0, view.fontSize + 1.0)
+        }
+    }
+
+    @objc private func zoomOutAction(_ sender: Any?) {
+        if let view = windowController?.activeTab?.terminalView {
+            view.fontSize = max(9.0, view.fontSize - 1.0)
+        }
+    }
+
+    @objc private func zoomResetAction(_ sender: Any?) {
+        if let view = windowController?.activeTab?.terminalView {
+            view.fontSize = 14.0
+        }
+    }
+
+    @objc private func nextTabAction(_ sender: Any?) {
+        windowController?.selectNextTab()
+    }
+
+    @objc private func prevTabAction(_ sender: Any?) {
+        windowController?.selectPreviousTab()
     }
 }
 
