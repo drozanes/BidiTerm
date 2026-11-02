@@ -87,6 +87,15 @@ public final class TerminalBuffer {
         bracketedPasteMode = false
     }
 
+    public func invalidateAllLineCaches() {
+        for line in mainLines {
+            line.invalidateCache()
+        }
+        for line in altLines {
+            line.invalidateCache()
+        }
+    }
+
     // MARK: - Current Buffer References
 
     public var isAltBufferActive: Bool {

@@ -5,17 +5,18 @@ public final class TerminalView: NSView {
     public var ptySession: PTYSession?
     public let buffer: TerminalBuffer
 
-    public var fontSize: CGFloat = 13.0 {
+    public var fontSize: CGFloat = 14.0 {
         didSet {
             updateFontMetrics()
+            buffer.invalidateAllLineCaches()
             notifyResize()
             needsDisplay = true
         }
     }
 
-    private var font: NSFont = NSFont.monospacedSystemFont(ofSize: 13.0, weight: .regular)
-    private var boldFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13.0, weight: .bold)
-    private var italicFont: NSFont = NSFont.monospacedSystemFont(ofSize: 13.0, weight: .regular)
+    private var font: NSFont = NSFont.monospacedSystemFont(ofSize: 14.0, weight: .medium)
+    private var boldFont: NSFont = NSFont.monospacedSystemFont(ofSize: 14.0, weight: .bold)
+    private var italicFont: NSFont = NSFont.monospacedSystemFont(ofSize: 14.0, weight: .medium)
     private var fontAscent: CGFloat = 10.0
     private var fontDescent: CGFloat = 3.0
     private var lineHeight: CGFloat = 18.0
@@ -79,18 +80,38 @@ public final class TerminalView: NSView {
     }
 
     private func updateFontMetrics() {
-        font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        boldFont = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold)
+        let size = fontSize
+        // Medium base font for crisp, solid monospaced Latin characters
+        let baseFont = NSFont.monospacedSystemFont(ofSize: size, weight: .medium)
+        let boldBase = NSFont.monospacedSystemFont(ofSize: size, weight: .bold)
+
+        // Cascade list: Arial Hebrew Bold gives clear, legible, robust Hebrew strokes
+        let hebrewBoldDesc = CTFontDescriptorCreateWithNameAndSize("ArialHebrew-Bold" as CFString, size)
+        let hebrewRegularDesc = CTFontDescriptorCreateWithNameAndSize("Arial Hebrew" as CFString, size)
+
+        let desc = CTFontCopyFontDescriptor(baseFont as CTFont)
+        let descWithCascade = CTFontDescriptorCreateCopyWithAttributes(
+            desc,
+            [kCTFontCascadeListAttribute: [hebrewBoldDesc, hebrewRegularDesc]] as CFDictionary
+        )
+        font = CTFontCreateWithFontDescriptor(descWithCascade, size, nil) as NSFont
+
+        let boldDesc = CTFontCopyFontDescriptor(boldBase as CTFont)
+        let boldDescWithCascade = CTFontDescriptorCreateCopyWithAttributes(
+            boldDesc,
+            [kCTFontCascadeListAttribute: [hebrewBoldDesc]] as CFDictionary
+        )
+        boldFont = CTFontCreateWithFontDescriptor(boldDescWithCascade, size, nil) as NSFont
         italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
 
         let ctFont = font as CTFont
         fontAscent = ceil(CTFontGetAscent(ctFont))
         fontDescent = ceil(CTFontGetDescent(ctFont))
         let leading = CTFontGetLeading(ctFont)
-        lineHeight = max(14.0, ceil(fontAscent + fontDescent + leading + 4.0))
+        lineHeight = max(16.0, ceil(fontAscent + fontDescent + leading + 4.0))
 
         let mSize = ("M" as NSString).size(withAttributes: [.font: font])
-        charWidth = max(6.0, ceil(mSize.width))
+        charWidth = max(7.0, ceil(mSize.width))
     }
 
     override public func setFrameSize(_ newSize: NSSize) {
@@ -116,6 +137,16 @@ public final class TerminalView: NSView {
 
     override public func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+
+        // Enable subpixel font smoothing, antialiasing, and subpixel positioning
+        context.setAllowsAntialiasing(true)
+        context.setShouldAntialias(true)
+        context.setAllowsFontSmoothing(true)
+        context.setShouldSmoothFonts(true)
+        context.setAllowsFontSubpixelPositioning(true)
+        context.setShouldSubpixelPositionFonts(true)
+        context.setAllowsFontSubpixelQuantization(true)
+        context.setShouldSubpixelQuantizeFonts(true)
 
         // Background
         context.setFillColor(TerminalPalette.defaultBackground.cgColor)
@@ -313,7 +344,7 @@ public final class TerminalView: NSView {
                 fontSize = max(9.0, fontSize - 1.0)
                 return
             case "0":
-                fontSize = 13.0
+                fontSize = 14.0
                 return
             default:
                 break
