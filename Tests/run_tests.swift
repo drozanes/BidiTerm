@@ -42,16 +42,35 @@ while Date().timeIntervalSince(start) < 2.0 {
 kill(pid, SIGKILL)
 close(master)
 
-// Test 2: Natural BiDi Sentence Ordering
-print("[Test 2] Testing Natural BiDi Sentence Ordering...")
-let originalLine = "### סיכום וטיפ למשא ומתן (Negotiation)"
-var formatted = ""
-for ch in originalLine {
-    let isHeb = ch.unicodeScalars.contains { ($0.value >= 0x0590 && $0.value <= 0x05FF) }
-    formatted.append(ch)
+// Test 2: Natural LRO Rendering
+print("[Test 2] Testing Natural LRO Rendering for Hebrew & English...")
+let testLine = "### סיכום וטיפ למשא ומתן (Negotiation)"
+let lro = "\u{202D}" + testLine + "\u{202C}"
+let p = NSMutableParagraphStyle()
+p.baseWritingDirection = .leftToRight
+let attr = NSAttributedString(string: lro, attributes: [
+    .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+    .paragraphStyle: p
+])
+let line = CTLineCreateWithAttributedString(attr)
+let runs = CTLineGetGlyphRuns(line) as! [CTRun]
+var glyphVisual = [(x: CGFloat, char: String)]()
+
+for r in runs {
+    let count = CTRunGetGlyphCount(r)
+    var indices = [CFIndex](repeating: 0, count: count)
+    var positions = [CGPoint](repeating: .zero, count: count)
+    CTRunGetStringIndices(r, CFRangeMake(0, count), &indices)
+    CTRunGetPositions(r, CFRangeMake(0, count), &positions)
+    for i in 0..<count {
+        let ch = (lro as NSString).substring(with: NSRange(location: indices[i], length: 1))
+        glyphVisual.append((x: positions[i].x, char: ch))
+    }
 }
-assert(!formatted.isEmpty)
-print("  -> Natural Hebrew & English line progression verified.")
+glyphVisual.sort { $0.x < $1.x }
+let visualResult = glyphVisual.map { $0.char }.joined().replacingOccurrences(of: "\u{202D}", with: "").replacingOccurrences(of: "\u{202C}", with: "")
+assert(visualResult == testLine, "Visual output must match the logical line character by character in LTR grid order")
+print("  -> LRO renders mixed Hebrew/English line in exact natural visual order!")
 
 print("========================================")
 print("ALL TESTS PASSED! Engine is verified.")
