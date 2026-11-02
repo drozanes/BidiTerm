@@ -135,9 +135,11 @@ public final class TerminalView: NSView {
             let y = paddingTop + CGFloat(row) * lineHeight
 
             var drawnCTLine: CTLine?
+            var drawnLine: TerminalLine?
             var lineAttrLen = 0
 
             if let line = buffer.line(at: lineIdx) {
+                drawnLine = line
                 let attrString = buildAttributedString(for: line, pStyle: styleParagraph)
                 lineAttrLen = attrString.length
 
@@ -156,7 +158,7 @@ public final class TerminalView: NSView {
 
             // Draw Cursor
             if scrollOffset == 0 && row == buffer.cursorRow && buffer.cursorVisible {
-                drawCursor(context: context, ctLine: drawnCTLine, rowY: y, lineLen: lineAttrLen)
+                drawCursor(context: context, ctLine: drawnCTLine, line: drawnLine, rowY: y, lineLen: lineAttrLen)
             }
         }
     }
@@ -182,28 +184,78 @@ public final class TerminalView: NSView {
 
         guard lastNonSpace >= 0 else {
             line.cachedAttributedString = result
+            line.cachedColToAttrMap = []
             return result
         }
 
-        let relevantCells = line.cells[0...lastNonSpace]
-        var currentChars = ""
-        var currentStyle = relevantCells[0].style
+        let relevantCells = Array(line.cells[0...lastNonSpace])
 
-        for cell in relevantCells {
-            if cell.style == currentStyle {
-                currentChars.append(cell.char)
-            } else {
-                appendRun(chars: currentChars, style: currentStyle, pStyle: pStyle, to: result)
-                currentChars = String(cell.char)
-                currentStyle = cell.style
+        // Fix Hebrew abbreviations punctuation (" -> ״, ' -> ׳)
+        var preprocessedCells = relevantCells
+        for i in 0..<relevantCells.count {
+            let ch = relevantCells[i].char
+            if ch == "\"" {
+                let prevHeb = i > 0 && isHebrew(relevantCells[i-1].char)
+                let nextHeb = i + 1 < relevantCells.count && isHebrew(relevantCells[i+1].char)
+                if prevHeb && nextHeb {
+                    preprocessedCells[i] = TerminalCell(char: "\u{05F4}", style: relevantCells[i].style)
+                }
+            } else if ch == "'" {
+                let prevHeb = i > 0 && isHebrew(relevantCells[i-1].char)
+                if prevHeb {
+                    preprocessedCells[i] = TerminalCell(char: "\u{05F3}", style: relevantCells[i].style)
+                }
             }
         }
-        if !currentChars.isEmpty {
-            appendRun(chars: currentChars, style: currentStyle, pStyle: pStyle, to: result)
+
+        // Segment Hebrew tokens with Right-to-Left Isolate (\u{2067}) so they read naturally in sentence order
+        var formattedTokens: [(text: String, style: TerminalStyle, origCol: Int?)] = []
+        var inHebrew = false
+
+        for col in 0..<preprocessedCells.count {
+            let cell = preprocessedCells[col]
+            let ch = cell.char
+            let isHeb = isHebrew(ch)
+            let isHebPunct = (ch == "\u{05F4}" || ch == "\u{05F3}" || ch == "-") && inHebrew
+
+            if isHeb || isHebPunct {
+                if !inHebrew {
+                    formattedTokens.append((text: "\u{2067}", style: cell.style, origCol: nil))
+                    inHebrew = true
+                }
+                formattedTokens.append((text: String(ch), style: cell.style, origCol: col))
+            } else {
+                if inHebrew {
+                    formattedTokens.append((text: "\u{2069}", style: cell.style, origCol: nil))
+                    inHebrew = false
+                }
+                formattedTokens.append((text: String(ch), style: cell.style, origCol: col))
+            }
+        }
+        if inHebrew {
+            let lastStyle = preprocessedCells.last?.style ?? .default
+            formattedTokens.append((text: "\u{2069}", style: lastStyle, origCol: nil))
         }
 
+        // Assemble AttributedString and build colToAttr map
+        var colToAttr = Array(repeating: 0, count: relevantCells.count)
+        var currentAttrLen = 0
+
+        for token in formattedTokens {
+            if let col = token.origCol, col < colToAttr.count {
+                colToAttr[col] = currentAttrLen
+            }
+            appendRun(chars: token.text, style: token.style, pStyle: pStyle, to: result)
+            currentAttrLen = result.length
+        }
+
+        line.cachedColToAttrMap = colToAttr
         line.cachedAttributedString = result
         return result
+    }
+
+    private func isHebrew(_ ch: Character) -> Bool {
+        return ch.unicodeScalars.contains { $0.value >= 0x0590 && $0.value <= 0x05FF }
     }
 
     private func appendRun(chars: String, style: TerminalStyle, pStyle: NSParagraphStyle, to result: NSMutableAttributedString) {
@@ -231,21 +283,23 @@ public final class TerminalView: NSView {
         result.append(NSAttributedString(string: chars, attributes: attrs))
     }
 
-    private func drawCursor(context: CGContext, ctLine: CTLine?, rowY: CGFloat, lineLen: Int) {
+    private func drawCursor(context: CGContext, ctLine: CTLine?, line: TerminalLine?, rowY: CGFloat, lineLen: Int) {
         guard cursorBlinkState else { return }
 
         var cursorX: CGFloat = paddingLeft
         let targetCol = buffer.cursorCol
 
-        if let ctLine = ctLine, lineLen > 0 {
-            if targetCol <= lineLen {
+        if let ctLine = ctLine, let line = line, lineLen > 0 {
+            if targetCol < line.cachedColToAttrMap.count {
+                let attrIdx = line.cachedColToAttrMap[targetCol]
                 var secondary: CGFloat = 0
-                let offset = CTLineGetOffsetForStringIndex(ctLine, targetCol, &secondary)
+                let offset = CTLineGetOffsetForStringIndex(ctLine, attrIdx, &secondary)
                 cursorX += offset
             } else {
                 var secondary: CGFloat = 0
                 let endOffset = CTLineGetOffsetForStringIndex(ctLine, lineLen, &secondary)
-                cursorX += endOffset + CGFloat(targetCol - lineLen) * charWidth
+                let extraCols = targetCol - line.cachedColToAttrMap.count
+                cursorX += endOffset + CGFloat(extraCols) * charWidth
             }
         } else {
             cursorX += CGFloat(targetCol) * charWidth
