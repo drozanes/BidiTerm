@@ -38,7 +38,73 @@ public enum PathDetector {
         let pathBytes = vpi[cdirOffset...].split(separator: 0).first
         guard let bytes = pathBytes, !bytes.isEmpty else { return nil }
 
-        return String(bytes: bytes, encoding: .utf8)
+        guard var rawPath = String(bytes: bytes, encoding: .utf8) else { return nil }
+        if rawPath.hasPrefix("/private/tmp") {
+            rawPath = String(rawPath.dropFirst(8))
+        } else if rawPath.hasPrefix("/private/var") {
+            rawPath = String(rawPath.dropFirst(8))
+        }
+        return rawPath
+    }
+
+    /// Formats an absolute path for display, substituting the user's home directory with '~'
+    public static func formatDisplayPath(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        var clean = path
+        if clean.hasPrefix("/private/tmp") {
+            clean = String(clean.dropFirst(8))
+        } else if clean.hasPrefix("/private/var") {
+            clean = String(clean.dropFirst(8))
+        }
+
+        if clean == home {
+            return "~"
+        } else if clean.hasPrefix(home + "/") {
+            return "~" + clean.dropFirst(home.count)
+        }
+        return clean
+    }
+
+    /// Discovers the active Git branch name for a directory, or nil if not inside a git repository
+    public static func getGitBranch(for directory: String) -> String? {
+        var current = URL(fileURLWithPath: directory)
+        let fm = FileManager.default
+
+        for _ in 0..<12 {
+            let gitDir = current.appendingPathComponent(".git")
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: gitDir.path, isDirectory: &isDir) {
+                let headFile: URL
+                if isDir.boolValue {
+                    headFile = gitDir.appendingPathComponent("HEAD")
+                } else {
+                    guard let content = try? String(contentsOf: gitDir, encoding: .utf8) else { break }
+                    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.hasPrefix("gitdir:") {
+                        let relPath = trimmed.dropFirst(7).trimmingCharacters(in: .whitespaces)
+                        let resolved = URL(fileURLWithPath: relPath, relativeTo: current).standardized
+                        headFile = resolved.appendingPathComponent("HEAD")
+                    } else {
+                        break
+                    }
+                }
+
+                if let head = try? String(contentsOf: headFile, encoding: .utf8) {
+                    let trimmed = head.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.hasPrefix("ref: refs/heads/") {
+                        return String(trimmed.dropFirst("ref: refs/heads/".count))
+                    } else if trimmed.count >= 7 {
+                        return String(trimmed.prefix(7))
+                    }
+                }
+                break
+            }
+
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path { break }
+            current = parent
+        }
+        return nil
     }
 
     /// Extracts the token or path under a given column index on a line of text

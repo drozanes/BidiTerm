@@ -45,9 +45,10 @@ public final class PTYSession {
             if getenv("LANG") == nil {
                 setenv("LANG", "en_US.UTF-8", 1)
             }
-            if let wd = workingDirectory {
-                chdir(wd)
-            }
+
+            // Always start in the specified directory, defaulting to user's home directory
+            let targetDir = (workingDirectory != nil && !workingDirectory!.isEmpty) ? workingDirectory! : NSHomeDirectory()
+            chdir(targetDir)
 
             let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
             var cArgs: [UnsafeMutablePointer<CChar>?] = [

@@ -32,13 +32,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit BidiTerm", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
-        // 2. File Menu (Tabs)
+        // 2. File Menu (Tabs & Sessions)
         let fileMenuItem = NSMenuItem()
         mainMenu.addItem(fileMenuItem)
         let fileMenu = NSMenu(title: "File")
         fileMenuItem.submenu = fileMenu
+
         fileMenu.addItem(withTitle: "New Tab", action: #selector(MainWindowController.newTabAction(_:)), keyEquivalent: "t")
+
+        let newTabInCwdItem = NSMenuItem(title: "New Tab in Current Directory", action: #selector(MainWindowController.newTabInCurrentDirectoryAction(_:)), keyEquivalent: "t")
+        newTabInCwdItem.keyEquivalentModifierMask = [.command, .option]
+        fileMenu.addItem(newTabInCwdItem)
+
+        let reopenTabItem = NSMenuItem(title: "Reopen Closed Tab", action: #selector(MainWindowController.reopenClosedTabAction(_:)), keyEquivalent: "t")
+        reopenTabItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(reopenTabItem)
+
         fileMenu.addItem(withTitle: "Close Tab", action: #selector(MainWindowController.closeTabAction(_:)), keyEquivalent: "w")
+        fileMenu.addItem(NSMenuItem.separator())
+
+        fileMenu.addItem(withTitle: "Restore Previous Session", action: #selector(MainWindowController.restorePreviousSessionAction(_:)), keyEquivalent: "")
+
+        let restoreStartupItem = NSMenuItem(title: "Restore Tabs on Startup", action: #selector(MainWindowController.toggleRestoreOnStartupAction(_:)), keyEquivalent: "")
+        restoreStartupItem.state = TabSessionManager.shared.restoreOnStartup ? .on : .off
+        fileMenu.addItem(restoreStartupItem)
 
         // 3. Edit Menu
         let editMenuItem = NSMenuItem()

@@ -31,7 +31,19 @@ public enum ShortcutRegistry {
         TerminalShortcut(
             keys: ["⌘", "T"],
             title: "New Tab",
-            description: "Opens a new terminal tab in the active window",
+            description: "Opens a new terminal tab at the default home directory",
+            category: .tabs
+        ),
+        TerminalShortcut(
+            keys: ["⌘", "⌥", "T"],
+            title: "New Tab in Current Directory",
+            description: "Opens a new tab matching the current active tab's directory",
+            category: .tabs
+        ),
+        TerminalShortcut(
+            keys: ["⌘", "⇧", "T"],
+            title: "Reopen Closed Tab",
+            description: "Restores the most recently closed tab and its working directory",
             category: .tabs
         ),
         TerminalShortcut(

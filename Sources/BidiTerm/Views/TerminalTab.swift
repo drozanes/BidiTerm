@@ -3,16 +3,28 @@ import AppKit
 public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDelegate {
     public let id: UUID
     public var title: String
+    public let initialDirectory: String
+    public var currentDirectory: String
     public let buffer: TerminalBuffer
     public let parser: ANSIParser
     public let ptySession: PTYSession
     public let terminalView: TerminalView
     public weak var windowController: MainWindowController?
 
-    public init(id: UUID = UUID(), windowController: MainWindowController) {
+    public init(id: UUID = UUID(), windowController: MainWindowController, initialDirectory: String? = nil, initialTitle: String? = nil) {
         self.id = id
         self.windowController = windowController
-        self.title = "zsh"
+        let dir = (initialDirectory != nil && !initialDirectory!.isEmpty) ? initialDirectory! : NSHomeDirectory()
+        self.initialDirectory = dir
+        self.currentDirectory = dir
+
+        if let explicitTitle = initialTitle, !explicitTitle.isEmpty {
+            self.title = explicitTitle
+        } else {
+            let folderName = (dir == NSHomeDirectory()) ? "~" : (dir as NSString).lastPathComponent
+            self.title = "📁 \(folderName)"
+        }
+
         self.buffer = TerminalBuffer(cols: 80, rows: 24)
         self.parser = ANSIParser(buffer: buffer)
         self.ptySession = PTYSession()
@@ -33,9 +45,25 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
 
     public func start() {
         do {
-            try ptySession.start(cols: UInt16(buffer.cols), rows: UInt16(buffer.rows))
+            try ptySession.start(cols: UInt16(buffer.cols), rows: UInt16(buffer.rows), workingDirectory: initialDirectory)
         } catch {
             NSLog("[TerminalTab] Error starting PTY: \(error)")
+        }
+    }
+
+    public func checkCurrentDirectory() {
+        guard ptySession.pid > 0 else { return }
+        if let liveCwd = PathDetector.getProcessCwd(pid: ptySession.pid), !liveCwd.isEmpty {
+            if liveCwd != currentDirectory {
+                currentDirectory = liveCwd
+                // If title represents a directory or default, keep it updated with current folder
+                if title.hasPrefix("📁") || title == "zsh" || title == "bash" {
+                    let folderName = (liveCwd == NSHomeDirectory()) ? "~" : (liveCwd as NSString).lastPathComponent
+                    self.title = "📁 \(folderName)"
+                    windowController?.tabDidUpdateTitle(self)
+                }
+                windowController?.tabDidUpdateDirectory(self)
+            }
         }
     }
 
@@ -50,6 +78,7 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
             guard let self = self else { return }
             self.parser.feed(data: data)
             self.terminalView.needsDisplay = true
+            self.checkCurrentDirectory()
         }
     }
 

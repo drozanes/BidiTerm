@@ -143,9 +143,52 @@ struct TestsRunner {
         let allShortcuts = ShortcutRegistry.allShortcuts
         assert(!allShortcuts.isEmpty, "Shortcuts registry must not be empty")
         assert(ShortcutRegistry.shortcuts(for: .tabs).contains { $0.title == "New Tab" }, "New Tab shortcut present")
+        assert(ShortcutRegistry.shortcuts(for: .tabs).contains { $0.title == "Reopen Closed Tab" }, "Reopen Closed Tab shortcut present")
+        assert(ShortcutRegistry.shortcuts(for: .tabs).contains { $0.title == "New Tab in Current Directory" }, "New Tab in Current Directory shortcut present")
         assert(ShortcutRegistry.shortcuts(for: .search).contains { $0.title == "Find in Terminal" }, "Find shortcut present")
         assert(ShortcutRegistry.shortcuts(for: .files).contains { $0.title == "Open File or Link" }, "Cmd+Click shortcut present")
         print("  -> ShortcutRegistry verified across all categories (tabs, search, files, clipboard, terminal)!")
+
+        // Test 6: Default Opening Path & Path Formatting
+        print("[Test 6] Testing Default Opening Path & Path Formatting...")
+        let homeDir = NSHomeDirectory()
+        assert(!homeDir.isEmpty && homeDir.hasPrefix("/"), "Home directory must be valid absolute path")
+        assert(PathDetector.formatDisplayPath(homeDir) == "~", "Home directory should format as '~'")
+        let subDir = homeDir + "/Dev"
+        assert(PathDetector.formatDisplayPath(subDir) == "~/Dev", "Subdirectory should format as '~/Dev'")
+        print("  -> Path formatting correctly produces Warp-style display path ('~/Dev')!")
+
+        // Test 7: Git Branch Detection
+        print("[Test 7] Testing Git Branch Detection...")
+        let gitRepoDir = "/Users/drozanes/dev/BidiTerm"
+        let branch = PathDetector.getGitBranch(for: gitRepoDir)
+        assert(branch == "main", "Branch for BidiTerm should be detected as 'main'")
+        let nonRepoBranch = PathDetector.getGitBranch(for: homeDir)
+        assert(nonRepoBranch == nil, "Home directory should not have a git branch")
+        print("  -> Git branch detection accurately extracts active branch ('\(branch ?? "")') without shell execution!")
+
+        // Test 8: TabSessionManager & Recently Closed Tabs
+        print("[Test 8] Testing TabSessionManager & Restoration Stack...")
+        let testDir1 = "/Users/drozanes/dev/BidiTerm"
+        let testDir2 = "/tmp"
+
+        TabSessionManager.shared.pushClosedTab(workingDirectory: testDir1, title: "📁 BidiTerm")
+        assert(TabSessionManager.shared.hasRecentlyClosedTabs, "Stack should have closed tabs")
+
+        let popped = TabSessionManager.shared.popClosedTab()
+        assert(popped != nil, "Popped closed tab should not be nil")
+        assert(popped?.workingDirectory == testDir1, "Popped directory should match pushed directory")
+
+        let sampleTabs = [
+            SavedTabState(workingDirectory: testDir1, title: "📁 BidiTerm"),
+            SavedTabState(workingDirectory: testDir2, title: "📁 tmp")
+        ]
+        TabSessionManager.shared.saveSession(tabs: sampleTabs, activeIndex: 1)
+        let loadedSession = TabSessionManager.shared.loadSavedSession()
+        assert(loadedSession != nil, "Session should be successfully saved and loaded")
+        assert(loadedSession?.tabs.count == 2, "Session should have 2 tabs")
+        assert(loadedSession?.activeIndex == 1, "Session activeIndex should match")
+        print("  -> TabSessionManager handles session persistence and recently closed tab restoration (Cmd+Shift+T) flawlessly!")
 
         print("========================================")
         print("ALL TESTS PASSED! Engine is verified.")
