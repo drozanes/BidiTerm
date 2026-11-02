@@ -40,17 +40,25 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, P
         ptySession = PTYSession()
         ptySession.delegate = self
 
+        // Forward ANSI query replies (e.g. cursor position report) to PTY
+        parser.onResponse = { [weak self] reply in
+            self?.ptySession.write(string: reply)
+        }
+
         terminalView = TerminalView(buffer: buffer)
         terminalView.ptySession = ptySession
         terminalView.frame = window.contentView?.bounds ?? .zero
         terminalView.autoresizingMask = [.width, .height]
 
-        window.contentView?.addSubview(terminalView)
+        window.contentView = terminalView
         window.makeFirstResponder(terminalView)
+
+        // Calculate initial rows/cols based on window size
+        terminalView.notifyResize()
 
         // Start PTY Session
         do {
-            try ptySession.start(cols: 80, rows: 24)
+            try ptySession.start(cols: UInt16(buffer.cols), rows: UInt16(buffer.rows))
         } catch {
             NSLog("[MainWindowController] Error starting PTY: \(error)")
         }
@@ -59,9 +67,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, P
     // MARK: - PTYSessionDelegate
 
     public func ptySession(_ session: PTYSession, didReceiveData data: Data) {
-        parser.feed(data: data)
         DispatchQueue.main.async { [weak self] in
-            self?.terminalView.needsDisplay = true
+            guard let self = self else { return }
+            self.parser.feed(data: data)
+            self.terminalView.needsDisplay = true
         }
     }
 

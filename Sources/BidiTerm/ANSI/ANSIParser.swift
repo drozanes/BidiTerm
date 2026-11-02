@@ -3,6 +3,7 @@ import Foundation
 
 public final class ANSIParser {
     public let buffer: TerminalBuffer
+    public var onResponse: ((String) -> Void)?
 
     private enum State {
         case ground
@@ -29,7 +30,6 @@ public final class ANSIParser {
         var index = 0
 
         while index < bytes.count {
-            // Check UTF-8 validity for the next character
             let b = bytes[index]
             let charLen: Int
             if (b & 0x80) == 0 {
@@ -41,13 +41,11 @@ public final class ANSIParser {
             } else if (b & 0xF8) == 0xF0 {
                 charLen = 4
             } else {
-                // Invalid byte, skip
                 index += 1
                 continue
             }
 
             if index + charLen > bytes.count {
-                // Incomplete UTF-8 sequence, keep for next feed
                 pendingBytes = Array(bytes[index...])
                 break
             }
@@ -100,7 +98,7 @@ public final class ANSIParser {
             case "8":
                 buffer.restoreCursor()
                 state = .ground
-            case "M": // Reverse index (cursor up or scroll down)
+            case "M": // Reverse index
                 if buffer.cursorRow == 0 {
                     // scroll down
                 } else {
@@ -115,21 +113,19 @@ public final class ANSIParser {
             }
 
         case .charset:
-            // Skip the character set designation (e.g. `(B`)
             state = .ground
 
         case .csi:
-            // CSI parameter bytes are 0x30–0x3F (0-9, :, ;, <, =, >, ?)
-            if (char >= "0" && char <= "9") || char == ";" || char == "?" || char == ":" {
+            // Standard CSI parameter bytes are 0x20 through 0x3F (0-9, :, ;, <, =, >, ?, spaces, etc.)
+            if let ascii = char.asciiValue, ascii >= 0x20 && ascii <= 0x3F {
                 csiParams.append(char)
             } else {
-                // Final byte
                 handleCSI(command: char, params: csiParams)
                 state = .ground
             }
 
         case .osc:
-            if char == "\u{07}" || char == "\u{1B}" { // BEL or start of ST
+            if char == "\u{07}" || char == "\u{1B}" {
                 handleOSC(command: oscBuffer)
                 state = .ground
             } else {
@@ -183,6 +179,23 @@ public final class ANSIParser {
         case "J": // Erase in Display
             let mode = parts.first ?? 0
             buffer.eraseInDisplay(mode: mode)
+
+        case "n": // Device Status Report
+            if parts.first == 6 {
+                // Reply with cursor position: \x1b[row;colR
+                let r = buffer.cursorRow + 1
+                let c = buffer.cursorCol + 1
+                onResponse?("\u{1B}[\(r);\(c)R")
+            }
+
+        case "c": // Device Attributes
+            if params.hasPrefix(">") {
+                // Secondary DA
+                onResponse?("\u{1B}[>0;10;0c")
+            } else {
+                // Primary DA (VT100 with AVO)
+                onResponse?("\u{1B}[?1;2c")
+            }
 
         case "h": // Set Mode
             if isPrivate {
@@ -247,46 +260,36 @@ public final class ANSIParser {
                 buffer.activeStyle.isUnderline = false
             case 27:
                 buffer.activeStyle.isInverse = false
-            // Standard FG
             case 30...37:
                 buffer.activeStyle.fgColor = TerminalPalette.standardColors[p - 30]
             case 39:
                 buffer.activeStyle.fgColor = TerminalPalette.defaultForeground
-            // Standard BG
             case 40...47:
                 buffer.activeStyle.bgColor = TerminalPalette.standardColors[p - 40]
             case 49:
                 buffer.activeStyle.bgColor = nil
-            // Bright FG
             case 90...97:
                 buffer.activeStyle.fgColor = TerminalPalette.standardColors[8 + (p - 90)]
-            // Bright BG
             case 100...107:
                 buffer.activeStyle.bgColor = TerminalPalette.standardColors[8 + (p - 100)]
-            // Extended 38 (FG)
             case 38:
                 if i + 2 < parts.count && parts[i + 1] == 5 {
-                    // 38;5;n
                     let colorIdx = parts[i + 2]
                     buffer.activeStyle.fgColor = TerminalPalette.colorFor256(index: colorIdx)
                     i += 2
                 } else if i + 4 < parts.count && parts[i + 1] == 2 {
-                    // 38;2;r;g;b
                     let r = Double(parts[i + 2]) / 255.0
                     let g = Double(parts[i + 3]) / 255.0
                     let b = Double(parts[i + 4]) / 255.0
                     buffer.activeStyle.fgColor = NSColor(srgbRed: r, green: g, blue: b, alpha: 1.0)
                     i += 4
                 }
-            // Extended 48 (BG)
             case 48:
                 if i + 2 < parts.count && parts[i + 1] == 5 {
-                    // 48;5;n
                     let colorIdx = parts[i + 2]
                     buffer.activeStyle.bgColor = TerminalPalette.colorFor256(index: colorIdx)
                     i += 2
                 } else if i + 4 < parts.count && parts[i + 1] == 2 {
-                    // 48;2;r;g;b
                     let r = Double(parts[i + 2]) / 255.0
                     let g = Double(parts[i + 3]) / 255.0
                     let b = Double(parts[i + 4]) / 255.0
@@ -301,7 +304,6 @@ public final class ANSIParser {
     }
 
     private func handleOSC(command: String) {
-        // e.g. "0;New Title" or "2;New Title"
         let parts = command.split(separator: ";", maxSplits: 1)
         if parts.count == 2 {
             let code = parts[0]

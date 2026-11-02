@@ -124,7 +124,7 @@ public final class TerminalView: NSView {
         let visibleRows = buffer.rows
 
         // Calculate line range based on scrollOffset
-        let bottomIndex = totalLines - 1 - scrollOffset
+        let bottomIndex = max(0, totalLines - 1 - scrollOffset)
         let startIndex = max(0, bottomIndex - visibleRows + 1)
 
         let styleParagraph = NSMutableParagraphStyle()
@@ -132,25 +132,31 @@ public final class TerminalView: NSView {
 
         for row in 0..<visibleRows {
             let lineIdx = startIndex + row
-            guard let line = buffer.line(at: lineIdx) else { continue }
-
             let y = paddingTop + CGFloat(row) * lineHeight
 
-            // Render line text if not empty
-            let attrString = buildAttributedString(for: line, pStyle: styleParagraph)
-            let ctLine = CTLineCreateWithAttributedString(attrString)
+            var drawnCTLine: CTLine?
+            var lineAttrLen = 0
 
-            // Draw line
-            context.saveGState()
-            context.textMatrix = .identity
-            context.translateBy(x: paddingLeft, y: y + fontAscent)
-            context.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(ctLine, context)
-            context.restoreGState()
+            if let line = buffer.line(at: lineIdx) {
+                let attrString = buildAttributedString(for: line, pStyle: styleParagraph)
+                lineAttrLen = attrString.length
 
-            // Draw Cursor (if this row is the active cursor row and scroll is at bottom)
+                if lineAttrLen > 0 {
+                    let ctLine = CTLineCreateWithAttributedString(attrString)
+                    drawnCTLine = ctLine
+
+                    context.saveGState()
+                    context.textMatrix = .identity
+                    context.translateBy(x: paddingLeft, y: y + fontAscent)
+                    context.scaleBy(x: 1.0, y: -1.0)
+                    CTLineDraw(ctLine, context)
+                    context.restoreGState()
+                }
+            }
+
+            // Draw Cursor
             if scrollOffset == 0 && row == buffer.cursorRow && buffer.cursorVisible {
-                drawCursor(context: context, ctLine: ctLine, rowY: y, lineLen: attrString.length)
+                drawCursor(context: context, ctLine: drawnCTLine, rowY: y, lineLen: lineAttrLen)
             }
         }
     }
@@ -165,10 +171,25 @@ public final class TerminalView: NSView {
             return result
         }
 
-        var currentChars = ""
-        var currentStyle = line.cells[0].style
+        var lastNonSpace = -1
+        for i in stride(from: line.cells.count - 1, through: 0, by: -1) {
+            let cell = line.cells[i]
+            if cell.char != " " || cell.style.bgColor != nil || cell.style.isInverse {
+                lastNonSpace = i
+                break
+            }
+        }
 
-        for cell in line.cells {
+        guard lastNonSpace >= 0 else {
+            line.cachedAttributedString = result
+            return result
+        }
+
+        let relevantCells = line.cells[0...lastNonSpace]
+        var currentChars = ""
+        var currentStyle = relevantCells[0].style
+
+        for cell in relevantCells {
             if cell.style == currentStyle {
                 currentChars.append(cell.char)
             } else {
@@ -210,17 +231,22 @@ public final class TerminalView: NSView {
         result.append(NSAttributedString(string: chars, attributes: attrs))
     }
 
-    private func drawCursor(context: CGContext, ctLine: CTLine, rowY: CGFloat, lineLen: Int) {
+    private func drawCursor(context: CGContext, ctLine: CTLine?, rowY: CGFloat, lineLen: Int) {
         guard cursorBlinkState else { return }
 
         var cursorX: CGFloat = paddingLeft
         let targetCol = buffer.cursorCol
 
-        if lineLen > 0 {
-            var secondary: CGFloat = 0
-            let index = min(targetCol, lineLen)
-            let offset = CTLineGetOffsetForStringIndex(ctLine, index, &secondary)
-            cursorX += offset
+        if let ctLine = ctLine, lineLen > 0 {
+            if targetCol <= lineLen {
+                var secondary: CGFloat = 0
+                let offset = CTLineGetOffsetForStringIndex(ctLine, targetCol, &secondary)
+                cursorX += offset
+            } else {
+                var secondary: CGFloat = 0
+                let endOffset = CTLineGetOffsetForStringIndex(ctLine, lineLen, &secondary)
+                cursorX += endOffset + CGFloat(targetCol - lineLen) * charWidth
+            }
         } else {
             cursorX += CGFloat(targetCol) * charWidth
         }
@@ -334,17 +360,14 @@ public final class TerminalView: NSView {
     // MARK: - Smart Paste & Clipboard
 
     public func handlePaste() {
-        // Check if pasteboard has image
         if ImageClipboardManager.shared.hasImage() {
             if let escapedPath = ImageClipboardManager.shared.saveClipboardImageToFile() {
-                // Insert escaped path + space into terminal
                 ptySession?.write(string: "\(escapedPath) ")
                 resetScroll()
                 return
             }
         }
 
-        // Fallback to text
         let pasteboard = NSPasteboard.general
         if let text = pasteboard.string(forType: .string) {
             if buffer.bracketedPasteMode {
@@ -357,7 +380,6 @@ public final class TerminalView: NSView {
     }
 
     public func handleCopy() {
-        // Copy selection if present
         if let (start, end) = normalizedSelection() {
             var selectedText = ""
             for r in start.row...end.row {
@@ -415,11 +437,9 @@ public final class TerminalView: NSView {
 
     override public func scrollWheel(with event: NSEvent) {
         if event.deltaY > 0 {
-            // Scroll up into history
             let maxOffset = max(0, buffer.totalLineCount - buffer.rows)
             scrollOffset = min(maxOffset, scrollOffset + Int(ceil(event.deltaY)))
         } else if event.deltaY < 0 {
-            // Scroll down towards prompt
             scrollOffset = max(0, scrollOffset + Int(floor(event.deltaY)))
         }
     }

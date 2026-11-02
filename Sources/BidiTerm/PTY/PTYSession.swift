@@ -12,7 +12,7 @@ public final class PTYSession {
     private var masterFd: Int32 = -1
     private var childPid: pid_t = -1
     private var readSource: DispatchSourceRead?
-    private let readQueue = DispatchQueue(label: "com.bidi.term.pty.read", qos: .userInteractive)
+    private let readQueue = DispatchQueue(label: "com.biditerm.pty.read", qos: .userInteractive)
 
     public private(set) var isRunning: Bool = false
     public private(set) var cols: UInt16 = 80
@@ -29,77 +29,37 @@ public final class PTYSession {
         self.rows = rows
 
         var master: Int32 = 0
-        var slave: Int32 = 0
         var win = winsize(ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0)
 
-        guard openpty(&master, &slave, nil, nil, &win) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Failed to openpty"])
+        // forkpty handles openpty, fork, and login_tty(slave) in the child process
+        let pid = forkpty(&master, nil, nil, &win)
+        guard pid >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Failed to forkpty"])
         }
+
+        if pid == 0 {
+            // Child process: setup environment and execute shell
+            setenv("TERM", "xterm-256color", 1)
+            setenv("COLORTERM", "truecolor", 1)
+            if getenv("LANG") == nil {
+                setenv("LANG", "en_US.UTF-8", 1)
+            }
+            if let wd = workingDirectory {
+                chdir(wd)
+            }
+
+            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+            var cArgs: [UnsafeMutablePointer<CChar>?] = [
+                strdup(shell),
+                strdup("-l"),
+                nil
+            ]
+            execv(shell, &cArgs)
+            _exit(1)
+        }
+
+        // Parent process
         self.masterFd = master
-
-        // Determine shell
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        let shellArgs = [shell, "-l"]
-
-        // Setup posix_spawn file actions
-        var actions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&actions)
-        defer { posix_spawn_file_actions_destroy(&actions) }
-
-        posix_spawn_file_actions_adddup2(&actions, slave, STDIN_FILENO)
-        posix_spawn_file_actions_adddup2(&actions, slave, STDOUT_FILENO)
-        posix_spawn_file_actions_adddup2(&actions, slave, STDERR_FILENO)
-        posix_spawn_file_actions_addclose(&actions, master)
-        posix_spawn_file_actions_addclose(&actions, slave)
-
-        // Setup spawn attributes
-        var attr: posix_spawnattr_t?
-        posix_spawnattr_init(&attr)
-        defer { posix_spawnattr_destroy(&attr) }
-
-        var flags = Int16(POSIX_SPAWN_SETEXEC)
-        flags |= Int16(POSIX_SPAWN_SETPGROUP)
-        posix_spawnattr_setflags(&attr, flags)
-        posix_spawnattr_setpgroup(&attr, 0)
-
-        // Setup environment
-        var envDict = ProcessInfo.processInfo.environment
-        envDict["TERM"] = "xterm-256color"
-        envDict["COLORTERM"] = "truecolor"
-        if envDict["LANG"] == nil {
-            envDict["LANG"] = "en_US.UTF-8"
-        }
-        if let wd = workingDirectory {
-            envDict["PWD"] = wd
-        }
-
-        let envStrings = envDict.map { "\($0.key)=\($0.value)" }
-        var cEnv: [UnsafeMutablePointer<CChar>?] = envStrings.map { strdup($0) }
-        cEnv.append(nil)
-        defer {
-            for ptr in cEnv {
-                if let ptr = ptr { free(ptr) }
-            }
-        }
-
-        var cArgs: [UnsafeMutablePointer<CChar>?] = shellArgs.map { strdup($0) }
-        cArgs.append(nil)
-        defer {
-            for ptr in cArgs {
-                if let ptr = ptr { free(ptr) }
-            }
-        }
-
-        var pid: pid_t = 0
-        let spawnResult = posix_spawnp(&pid, shell, &actions, &attr, cArgs, cEnv)
-        close(slave)
-
-        guard spawnResult == 0 else {
-            close(master)
-            self.masterFd = -1
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(spawnResult), userInfo: [NSLocalizedDescriptionKey: "Failed to spawn shell"])
-        }
-
         self.childPid = pid
         self.isRunning = true
 
@@ -118,13 +78,13 @@ public final class PTYSession {
         source.setEventHandler { [weak self] in
             guard let self = self, self.masterFd >= 0 else { return }
 
-            var buffer = [UInt8](repeating: 0, count: 8192)
+            var buffer = [UInt8](repeating: 0, count: 16384)
             let bytesRead = read(self.masterFd, &buffer, buffer.count)
 
             if bytesRead > 0 {
                 let data = Data(bytes: buffer, count: bytesRead)
                 self.delegate?.ptySession(self, didReceiveData: data)
-            } else if bytesRead < 0 && errno != EAGAIN && errno != EWOULDBLOCK {
+            } else if bytesRead == 0 || (bytesRead < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                 source.cancel()
             }
         }

@@ -341,6 +341,13 @@ public final class TerminalBuffer {
             line.invalidateCache()
         }
 
+        while mainLines.count < rows {
+            mainLines.append(TerminalLine(length: cols))
+        }
+        while altLines.count < rows {
+            altLines.append(TerminalLine(length: cols))
+        }
+
         cursorRow = min(cursorRow, rows - 1)
         cursorCol = min(cursorCol, cols - 1)
         delegate?.terminalBufferNeedsDisplay(self)
