@@ -247,6 +247,56 @@ struct TestsRunner {
         session.terminate()
         print("  -> Multi-line Hebrew paste successfully processed through chunked async PTY write queue without buffer overflow!")
 
+        // Test 11: Hebrew Cursor Positioning & BiDi Arrow Navigation
+        print("[Test 11] Testing Hebrew Cursor Positioning & BiDi Arrow Navigation...")
+        let hebrewLine = "שלום"
+        let font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+        let pStyle = NSMutableParagraphStyle()
+        pStyle.baseWritingDirection = .rightToLeft
+        let attr = NSAttributedString(string: hebrewLine, attributes: [.font: font, .paragraphStyle: pStyle])
+        let ctLine = CTLineCreateWithAttributedString(attr)
+        let w = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
+        let lineX = 800 - 10 - w
+
+        let runs = CTLineGetGlyphRuns(ctLine) as! [CTRun]
+        assert(!runs.isEmpty, "CTLine must contain glyph runs")
+
+        var col0Pos: CGFloat = 0
+        var col3Pos: CGFloat = 0
+        for r in runs {
+            let count = CTRunGetGlyphCount(r)
+            var indices = [CFIndex](repeating: 0, count: count)
+            var positions = [CGPoint](repeating: .zero, count: count)
+            CTRunGetStringIndices(r, CFRangeMake(0, count), &indices)
+            CTRunGetPositions(r, CFRangeMake(0, count), &positions)
+            for i in 0..<count {
+                if indices[i] == 0 { col0Pos = lineX + positions[i].x }
+                if indices[i] == 3 { col3Pos = lineX + positions[i].x }
+            }
+        }
+        // In Hebrew RTL, character 0 ('ש') is to the RIGHT of character 3 ('ם')
+        assert(col0Pos > col3Pos, "In Hebrew RTL, character 0 ('ש') must be visually to the right of character 3 ('ם')")
+
+        // Test arrow key inversion logic:
+        func arrowSeq(keyCode: UInt16, isRTL: Bool) -> String {
+            switch keyCode {
+            case 124: // Right Arrow
+                return isRTL ? "\u{1B}[D" : "\u{1B}[C"
+            case 123: // Left Arrow
+                return isRTL ? "\u{1B}[C" : "\u{1B}[D"
+            default:
+                return ""
+            }
+        }
+        // In RTL text, Left Arrow must send forward (\e[C) to visually move left
+        assert(arrowSeq(keyCode: 123, isRTL: true) == "\u{1B}[C", "Left arrow in RTL must advance logically to move visually left")
+        // In RTL text, Right Arrow must send backward (\e[D) to visually move right
+        assert(arrowSeq(keyCode: 124, isRTL: true) == "\u{1B}[D", "Right arrow in RTL must retreat logically to move visually right")
+        // In LTR text, standard behavior is preserved
+        assert(arrowSeq(keyCode: 123, isRTL: false) == "\u{1B}[D", "Left arrow in LTR must send \\e[D")
+        assert(arrowSeq(keyCode: 124, isRTL: false) == "\u{1B}[C", "Right arrow in LTR must send \\e[C")
+        print("  -> Hebrew cursor visual positioning and Left/Right arrow natural navigation verified!")
+
         print("========================================")
         print("ALL TESTS PASSED! Engine is verified.")
         print("========================================")

@@ -388,27 +388,68 @@ public final class TerminalView: NSView {
     private func drawCursor(context: CGContext, ctLine: CTLine?, lineX: CGFloat, isRTL: Bool, rowY: CGFloat, lineLen: Int) {
         guard cursorBlinkState else { return }
 
-        var cursorX: CGFloat = lineX
         let targetCol = buffer.cursorCol
-
-        if let ctLine = ctLine, lineLen > 0 {
-            if targetCol <= lineLen {
-                var secondary: CGFloat = 0
-                let offset = CTLineGetOffsetForStringIndex(ctLine, targetCol, &secondary)
-                cursorX = lineX + (isRTL ? (offset - charWidth) : offset)
-            } else {
-                var secondary: CGFloat = 0
-                let offset = CTLineGetOffsetForStringIndex(ctLine, lineLen, &secondary)
-                let extra = CGFloat(targetCol - lineLen) * charWidth
-                cursorX = lineX + (isRTL ? (offset - charWidth - extra) : (offset + extra))
-            }
-        } else {
-            cursorX = isRTL ? (bounds.width - paddingRight - CGFloat(targetCol + 1) * charWidth) : (paddingLeft + CGFloat(targetCol) * charWidth)
-        }
+        let rawCursorX = calculateCursorX(ctLine: ctLine, targetCol: targetCol, lineLen: lineLen, isRTL: isRTL, lineX: lineX)
+        let cursorX = max(paddingLeft, min(bounds.width - paddingRight - charWidth, rawCursorX))
 
         let cursorRect = NSRect(x: cursorX, y: rowY + 2, width: charWidth, height: lineHeight - 2)
         context.setFillColor(TerminalPalette.cursorColor.cgColor)
         context.fill(cursorRect)
+    }
+
+    private func calculateCursorX(ctLine: CTLine?, targetCol: Int, lineLen: Int, isRTL: Bool, lineX: CGFloat) -> CGFloat {
+        guard let ctLine = ctLine, lineLen > 0 else {
+            if isRTL {
+                return bounds.width - paddingRight - charWidth
+            } else {
+                return paddingLeft
+            }
+        }
+
+        let runs = CTLineGetGlyphRuns(ctLine) as! [CTRun]
+
+        // 1. If targetCol is on an existing glyph, find its exact visual position
+        for r in runs {
+            let count = CTRunGetGlyphCount(r)
+            var indices = [CFIndex](repeating: 0, count: count)
+            var positions = [CGPoint](repeating: .zero, count: count)
+            CTRunGetStringIndices(r, CFRangeMake(0, count), &indices)
+            CTRunGetPositions(r, CFRangeMake(0, count), &positions)
+
+            for i in 0..<count {
+                if indices[i] == targetCol {
+                    return lineX + positions[i].x
+                }
+            }
+        }
+
+        // 2. If targetCol is at or past the end of the text (insertion point):
+        if targetCol >= lineLen {
+            let extra = CGFloat(targetCol - lineLen) * charWidth
+            for r in runs {
+                let count = CTRunGetGlyphCount(r)
+                var indices = [CFIndex](repeating: 0, count: count)
+                var positions = [CGPoint](repeating: .zero, count: count)
+                CTRunGetStringIndices(r, CFRangeMake(0, count), &indices)
+                CTRunGetPositions(r, CFRangeMake(0, count), &positions)
+                let isLastRTL = CTRunGetStatus(r).contains(.rightToLeft)
+
+                for i in 0..<count {
+                    if indices[i] == lineLen - 1 {
+                        let lastX = lineX + positions[i].x
+                        if isLastRTL {
+                            // In RTL, the next character will be placed to the LEFT of the last character
+                            return lastX - charWidth - extra
+                        } else {
+                            // In LTR, the next character will be placed to the RIGHT of the last character
+                            return lastX + charWidth + extra
+                        }
+                    }
+                }
+            }
+        }
+
+        return lineX + CGFloat(targetCol) * charWidth
     }
 
     // MARK: - Keyboard Handling
@@ -622,8 +663,12 @@ public final class TerminalView: NSView {
         case 53: return "\u{1B}"      // Escape
         case 126: return "\u{1B}[A"   // Up Arrow
         case 125: return "\u{1B}[B"   // Down Arrow
-        case 124: return "\u{1B}[C"   // Right Arrow
-        case 123: return "\u{1B}[D"   // Left Arrow
+        case 124: // Right Arrow
+            // In RTL context, moving visually to the Right corresponds to moving backwards in memory (\e[D)
+            return isCursorAtRTL() ? "\u{1B}[D" : "\u{1B}[C"
+        case 123: // Left Arrow
+            // In RTL context, moving visually to the Left corresponds to moving forwards in memory (\e[C)
+            return isCursorAtRTL() ? "\u{1B}[C" : "\u{1B}[D"
         case 115: return "\u{1B}[H"   // Home
         case 119: return "\u{1B}[F"   // End
         case 116: return "\u{1B}[5~"  // Page Up
@@ -631,6 +676,40 @@ public final class TerminalView: NSView {
         case 117: return "\u{1B}[3~"  // Forward Delete
         default: return nil
         }
+    }
+
+    private func isCursorAtRTL() -> Bool {
+        guard let line = buffer.line(at: buffer.cursorRow) else { return false }
+        let col = buffer.cursorCol
+
+        // 1. Check cell at current cursor position
+        if col < line.cells.count {
+            let ch = line.cells[col].char
+            if isHebrewChar(ch) { return true }
+        }
+
+        // 2. Check cell immediately before cursor (insertion point after Hebrew word)
+        if col > 0 && col - 1 < line.cells.count {
+            let prevCh = line.cells[col - 1].char
+            if isHebrewChar(prevCh) { return true }
+        }
+
+        // 3. Check if line as a whole is cached as RTL
+        if line.isCachedRTL == true {
+            return true
+        }
+
+        return false
+    }
+
+    private func isHebrewChar(_ ch: Character) -> Bool {
+        for scalar in ch.unicodeScalars {
+            let val = scalar.value
+            if (val >= 0x0590 && val <= 0x05FF) || (val >= 0xFB1D && val <= 0xFB4F) {
+                return true
+            }
+        }
+        return false
     }
 
     private func resetScroll() {
