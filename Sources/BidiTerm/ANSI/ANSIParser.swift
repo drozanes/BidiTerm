@@ -143,6 +143,26 @@ public final class ANSIParser {
         case "m": // SGR - Colors and Styling
             handleSGR(parts: parts)
 
+        case "@": // ICH - Insert Character
+            let n = parts.first ?? 1
+            buffer.insertCharacters(count: n)
+
+        case "P": // DCH - Delete Character
+            let n = parts.first ?? 1
+            buffer.deleteCharacters(count: n)
+
+        case "X": // ECH - Erase Character
+            let n = parts.first ?? 1
+            buffer.eraseCharacters(count: n)
+
+        case "L": // IL - Insert Line
+            let n = parts.first ?? 1
+            buffer.insertLines(count: n)
+
+        case "M": // DL - Delete Line
+            let n = parts.first ?? 1
+            buffer.deleteLines(count: n)
+
         case "A": // Cursor Up
             let n = parts.first ?? 1
             buffer.moveCursor(deltaRow: -max(1, n), deltaCol: 0)
@@ -159,6 +179,16 @@ public final class ANSIParser {
             let n = parts.first ?? 1
             buffer.moveCursor(deltaRow: 0, deltaCol: -max(1, n))
 
+        case "E": // CNL - Cursor Next Line
+            let n = parts.first ?? 1
+            buffer.moveCursor(deltaRow: max(1, n), deltaCol: 0)
+            buffer.setCursor(row: buffer.cursorRow, col: 0)
+
+        case "F": // CPL - Cursor Previous Line
+            let n = parts.first ?? 1
+            buffer.moveCursor(deltaRow: -max(1, n), deltaCol: 0)
+            buffer.setCursor(row: buffer.cursorRow, col: 0)
+
         case "H", "f": // Cursor Position (1-based)
             let row = (parts.count > 0 ? parts[0] : 1) - 1
             let col = (parts.count > 1 ? parts[1] : 1) - 1
@@ -171,6 +201,23 @@ public final class ANSIParser {
         case "d": // Cursor Vertical Absolute
             let row = (parts.first ?? 1) - 1
             buffer.setCursor(row: max(0, row), col: buffer.cursorCol)
+
+        case "I": // CHT - Cursor Forward Tabulation
+            let n = parts.first ?? 1
+            for _ in 0..<n { buffer.tab() }
+
+        case "Z": // CBT - Cursor Backward Tabulation (Shift+Tab)
+            let n = parts.first ?? 1
+            let targetTab = max(0, ((buffer.cursorCol - 1) / 8 - (n - 1)) * 8)
+            buffer.setCursor(row: buffer.cursorRow, col: targetTab)
+
+        case "S": // SU - Scroll Up
+            let n = parts.first ?? 1
+            buffer.scrollUp(lines: n)
+
+        case "T": // SD - Scroll Down
+            let n = parts.first ?? 1
+            buffer.scrollDown(lines: n)
 
         case "K": // Erase in Line
             let mode = parts.first ?? 0

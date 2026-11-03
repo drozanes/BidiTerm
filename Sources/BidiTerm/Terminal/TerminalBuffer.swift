@@ -284,21 +284,147 @@ public final class TerminalBuffer {
         }
     }
 
-    public func eraseInLine(mode: Int) {
+    /// The active line under the cursor
+    public var currentCursorLine: TerminalLine? {
+        let lineIdx = viewportStartIndex + cursorRow
+        return line(at: lineIdx)
+    }
+
+    public func insertCharacters(count: Int) {
+        let n = max(1, count)
+        let lineIdx = viewportStartIndex + cursorRow
+        guard lineIdx < activeLines.count else { return }
+        let line = activeLines[lineIdx]
+        line.ensureCapacity(cols)
+
+        guard cursorCol < cols else { return }
+        let blank = TerminalCell(char: " ", style: activeStyle)
+
+        for c in stride(from: cols - 1, through: cursorCol + n, by: -1) {
+            line.cells[c] = line.cells[c - n]
+        }
+        for c in cursorCol..<min(cols, cursorCol + n) {
+            line.cells[c] = blank
+        }
+        line.invalidateCache()
+    }
+
+    public func deleteCharacters(count: Int) {
+        let n = max(1, count)
+        let lineIdx = viewportStartIndex + cursorRow
+        guard lineIdx < activeLines.count else { return }
+        let line = activeLines[lineIdx]
+        line.ensureCapacity(cols)
+
+        guard cursorCol < cols else { return }
+        let blank = TerminalCell(char: " ", style: activeStyle)
+
+        for c in cursorCol..<cols {
+            if c + n < cols {
+                line.cells[c] = line.cells[c + n]
+            } else {
+                line.cells[c] = blank
+            }
+        }
+        line.invalidateCache()
+    }
+
+    public func eraseCharacters(count: Int) {
+        let n = max(1, count)
         let lineIdx = viewportStartIndex + cursorRow
         guard lineIdx < activeLines.count else { return }
         let line = activeLines[lineIdx]
         line.ensureCapacity(cols)
 
         let blank = TerminalCell(char: " ", style: activeStyle)
+        for c in cursorCol..<min(cols, cursorCol + n) {
+            line.cells[c] = blank
+        }
+        line.invalidateCache()
+    }
+
+    public func insertLines(count: Int) {
+        let n = max(1, count)
+        guard cursorRow < rows else { return }
+
+        if isUsingAltBuffer {
+            for _ in 0..<min(n, rows - cursorRow) {
+                altLines.removeLast()
+                altLines.insert(TerminalLine(length: cols), at: cursorRow)
+            }
+        } else {
+            let lineIdx = viewportStartIndex + cursorRow
+            for _ in 0..<min(n, rows - cursorRow) {
+                if activeLines.count > viewportStartIndex + rows - 1 {
+                    activeLines.remove(at: viewportStartIndex + rows - 1)
+                }
+                activeLines.insert(TerminalLine(length: cols), at: lineIdx)
+            }
+        }
+        invalidateAllLineCaches()
+    }
+
+    public func deleteLines(count: Int) {
+        let n = max(1, count)
+        guard cursorRow < rows else { return }
+
+        if isUsingAltBuffer {
+            for _ in 0..<min(n, rows - cursorRow) {
+                altLines.remove(at: cursorRow)
+                altLines.append(TerminalLine(length: cols))
+            }
+        } else {
+            let lineIdx = viewportStartIndex + cursorRow
+            for _ in 0..<min(n, rows - cursorRow) {
+                if lineIdx < activeLines.count {
+                    activeLines.remove(at: lineIdx)
+                    activeLines.insert(TerminalLine(length: cols), at: viewportStartIndex + rows - 1)
+                }
+            }
+        }
+        invalidateAllLineCaches()
+    }
+
+    public func scrollUp(lines count: Int) {
+        let n = max(1, count)
+        for _ in 0..<n {
+            newLine()
+        }
+    }
+
+    public func scrollDown(lines count: Int) {
+        let n = max(1, count)
+        if isUsingAltBuffer {
+            for _ in 0..<min(n, rows) {
+                altLines.removeLast()
+                altLines.insert(TerminalLine(length: cols), at: 0)
+            }
+        } else {
+            for _ in 0..<min(n, rows) {
+                activeLines.insert(TerminalLine(length: cols), at: viewportStartIndex)
+            }
+        }
+        invalidateAllLineCaches()
+    }
+
+    public func eraseInLine(mode: Int) {
+        let lineIdx = viewportStartIndex + cursorRow
+        guard lineIdx < activeLines.count else { return }
+        let line = activeLines[lineIdx]
+        line.ensureCapacity(cols)
+        guard !line.cells.isEmpty else { return }
+
+        let blank = TerminalCell(char: " ", style: activeStyle)
 
         switch mode {
         case 0: // Cursor to end of line
-            for c in cursorCol..<line.cells.count {
+            let start = max(0, min(cursorCol, line.cells.count))
+            for c in start..<line.cells.count {
                 line.cells[c] = blank
             }
         case 1: // Start of line to cursor
-            for c in 0...min(cursorCol, line.cells.count - 1) {
+            let end = max(0, min(cursorCol, line.cells.count - 1))
+            for c in 0...end {
                 line.cells[c] = blank
             }
         case 2: // Entire line

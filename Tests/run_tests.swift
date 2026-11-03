@@ -296,68 +296,30 @@ struct TestsRunner {
                 return false
             }
 
-            let lineLen = text.count
-            guard lineLen > 0, hasHebrewTest(text) else {
+            guard text.count > 0, hasHebrewTest(text) else {
                 return isLeft ? "\u{1B}[D" : "\u{1B}[C"
             }
 
-            let pS = NSMutableParagraphStyle()
-            pS.baseWritingDirection = isRTL ? .rightToLeft : .leftToRight
-            let aStr = NSAttributedString(string: text, attributes: [
-                .font: font,
-                .paragraphStyle: pS
-            ])
-            let cLine = CTLineCreateWithAttributedString(aStr)
-            let lineWidth = CGFloat(CTLineGetTypographicBounds(cLine, nil, nil, nil))
-            let lX: CGFloat = isRTL ? max(16.0, 800.0 - 16.0 - lineWidth) : 16.0
-
-            var glyphs: [VisualGlyph] = []
-            let cRuns = CTLineGetGlyphRuns(cLine) as! [CTRun]
-            for r in cRuns {
-                let count = CTRunGetGlyphCount(r)
-                var indices = [CFIndex](repeating: 0, count: count)
-                var positions = [CGPoint](repeating: .zero, count: count)
-                CTRunGetStringIndices(r, CFRangeMake(0, count), &indices)
-                CTRunGetPositions(r, CFRangeMake(0, count), &positions)
-                for i in 0..<count {
-                    glyphs.append(VisualGlyph(col: indices[i], x: lX + positions[i].x))
-                }
-            }
-            var sec: CGFloat = 0
-            let ctOff = CTLineGetOffsetForStringIndex(cLine, lineLen, &sec)
-            glyphs.append(VisualGlyph(col: lineLen, x: lX + ctOff))
-
-            var curX: CGFloat = lX + ctOff
-            for g in glyphs {
-                if g.col == currentCol {
-                    curX = g.x
-                    break
-                }
-            }
-
-            if isLeft {
-                let leftCandidates = glyphs.filter { $0.x < curX - 1.0 }
-                if let target = leftCandidates.max(by: { $0.x < $1.x }) {
-                    let diff = target.col - currentCol
-                    if diff > 0 {
-                        return String(repeating: "\u{1B}[C", count: min(50, diff))
-                    } else if diff < 0 {
-                        return String(repeating: "\u{1B}[D", count: min(50, -diff))
+            let chars = Array(text)
+            var isCurHeb = false
+            if currentCol < chars.count {
+                for s in String(chars[currentCol]).unicodeScalars {
+                    if (s.value >= 0x0590 && s.value <= 0x05FF) || (s.value >= 0xFB1D && s.value <= 0xFB4F) {
+                        isCurHeb = true; break
                     }
                 }
-                return "\u{1B}[D"
-            } else {
-                let rightCandidates = glyphs.filter { $0.x > curX + 1.0 }
-                if let target = rightCandidates.min(by: { $0.x < $1.x }) {
-                    let diff = target.col - currentCol
-                    if diff > 0 {
-                        return String(repeating: "\u{1B}[C", count: min(50, diff))
-                    } else if diff < 0 {
-                        return String(repeating: "\u{1B}[D", count: min(50, -diff))
+            }
+            if currentCol > 0 && currentCol - 1 < chars.count {
+                for s in String(chars[currentCol - 1]).unicodeScalars {
+                    if (s.value >= 0x0590 && s.value <= 0x05FF) || (s.value >= 0xFB1D && s.value <= 0xFB4F) {
+                        isCurHeb = true; break
                     }
                 }
-                return "\u{1B}[C"
             }
+            if !isCurHeb {
+                return isLeft ? "\u{1B}[D" : "\u{1B}[C"
+            }
+            return isLeft ? "\u{1B}[C" : "\u{1B}[D"
         }
 
         // Verify pure English line
@@ -369,19 +331,20 @@ struct TestsRunner {
 
         // Verify mixed line: "echo שלום world"
         let mixedLine = "echo שלום world"
-        // English word: Left arrow must send \e[D and Right arrow \e[C
+        // English prefix: Left arrow must send \e[D and Right arrow \e[C (1-step, never jumping!)
+        for i in 0...3 {
+            assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: i, isLeft: true) == "\u{1B}[D")
+            assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: i, isLeft: false) == "\u{1B}[C")
+        }
+        // English suffix: Left arrow must send \e[D and Right arrow \e[C
         for i in 11...14 {
             assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: i, isLeft: true) == "\u{1B}[D")
             assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: i, isLeft: false) == "\u{1B}[C")
         }
-        // Hebrew word: on 'ל' (col 6), to the right is 'ש' (col 5), so Right arrow must send \e[D
-        assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: 6, isLeft: false) == "\u{1B}[D")
-        // on 'ל' (col 6), to the left is 'ו' (col 7), so Left arrow must send \e[C
+        // Hebrew word: on 'ל' (col 6), to the left is visually left (\e[C) and right is visually right (\e[D)
         assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: 6, isLeft: true) == "\u{1B}[C")
-
-        // Boundary crossing: from space before Hebrew (col 4) to rightmost Hebrew character visually 'ם' (col 8)
-        assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: 4, isLeft: false) == "\u{1B}[C\u{1B}[C\u{1B}[C\u{1B}[C")
-        print("  -> Mixed Hebrew & English natural visual arrow navigation verified without inverting English words!")
+        assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: 6, isLeft: false) == "\u{1B}[D")
+        print("  -> Mixed Hebrew & English natural visual arrow navigation verified with 1-step precision!")
 
         // Test 13: Tab Renaming & Tab Bar Position (.top vs .left)
         print("[Test 13] Testing Tab Renaming & Tab Bar Position Persistence...")
@@ -460,6 +423,34 @@ struct TestsRunner {
         assert(restoredLegacy.isCustomTitle == false)
 
         print("  -> Path preservation during tab renaming, conversation title display, and session persistence verified!")
+
+        // Test 15: ANSI In-Line Character Insertion, Deletion, and Middle-of-Line Editing
+        print("[Test 15] Testing ANSI In-Line Character Insertion, Deletion & Alignment...")
+        let testBuffer = TerminalBuffer(cols: 80, rows: 24)
+        let testParser = ANSIParser(buffer: testBuffer)
+
+        // Type initial line: "can you give me the discord channel lik?"
+        testParser.feed(data: "can you give me the discord channel lik?".data(using: .utf8)!)
+        assert(testBuffer.currentCursorLine?.trimmedText == "can you give me the discord channel lik?")
+
+        // Position cursor at col 38 (between 'li' and 'k?')
+        testBuffer.setCursor(row: 0, col: 38)
+        assert(testBuffer.cursorCol == 38)
+
+        // Insert character with CSI @
+        testParser.feed(data: "\u{1B}[1@".data(using: .utf8)!)
+        assert(testBuffer.currentCursorLine?.trimmedText == "can you give me the discord channel li k?")
+
+        // Write 'n' at col 38
+        testParser.feed(data: "n".data(using: .utf8)!)
+        assert(testBuffer.currentCursorLine?.trimmedText == "can you give me the discord channel link?", "Text after insertion must be 'can you give me the discord channel link?' without characters jumping")
+
+        // Move back to col 38 and delete 'n' with CSI P
+        testBuffer.setCursor(row: 0, col: 38)
+        testParser.feed(data: "\u{1B}[1P".data(using: .utf8)!)
+        assert(testBuffer.currentCursorLine?.trimmedText == "can you give me the discord channel lik?", "Text after deletion must revert cleanly without orphaned characters")
+
+        print("  -> In-line ANSI character insertion (CSI @) and deletion (CSI P) verified without character jumping!")
 
         print("========================================")
         print("ALL TESTS PASSED! Engine is verified.")

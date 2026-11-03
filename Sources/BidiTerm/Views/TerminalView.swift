@@ -400,9 +400,9 @@ public final class TerminalView: NSView {
     private func calculateCursorX(ctLine: CTLine?, targetCol: Int, lineLen: Int, isRTL: Bool, lineX: CGFloat) -> CGFloat {
         guard let ctLine = ctLine, lineLen > 0 else {
             if isRTL {
-                return bounds.width - paddingRight - charWidth
+                return max(paddingLeft, bounds.width - paddingRight - CGFloat(targetCol + 1) * charWidth)
             } else {
-                return paddingLeft
+                return paddingLeft + CGFloat(targetCol) * charWidth
             }
         }
 
@@ -690,7 +690,9 @@ public final class TerminalView: NSView {
     }
 
     private func arrowSequenceForVisualDirection(isLeft: Bool) -> String {
-        guard let line = buffer.line(at: buffer.cursorRow) else {
+        // ALWAYS inspect the active cursor line at (viewportStartIndex + cursorRow)
+        let lineIdx = buffer.viewportStartIndex + buffer.cursorRow
+        guard let line = buffer.line(at: lineIdx) else {
             return isLeft ? "\u{1B}[D" : "\u{1B}[C"
         }
 
@@ -700,66 +702,36 @@ public final class TerminalView: NSView {
             return isLeft ? "\u{1B}[D" : "\u{1B}[C"
         }
 
-        let (attrString, isRTL) = buildAttributedString(for: line)
-        let lineLen = attrString.length
-        guard lineLen > 0 else {
-            return isLeft ? "\u{1B}[D" : "\u{1B}[C"
-        }
-
         let currentCol = buffer.cursorCol
-        if currentCol > lineLen + 10 {
+        let isCursorOnHebrew: Bool = {
+            if currentCol < line.cells.count {
+                let char = line.cells[currentCol].char
+                for s in char.unicodeScalars {
+                    if (s.value >= 0x0590 && s.value <= 0x05FF) || (s.value >= 0xFB1D && s.value <= 0xFB4F) {
+                        return true
+                    }
+                }
+            }
+            if currentCol > 0 && currentCol - 1 < line.cells.count {
+                let prevChar = line.cells[currentCol - 1].char
+                for s in prevChar.unicodeScalars {
+                    if (s.value >= 0x0590 && s.value <= 0x05FF) || (s.value >= 0xFB1D && s.value <= 0xFB4F) {
+                        return true
+                    }
+                }
+            }
+            return false
+        }()
+
+        // If the cursor is inside a Latin/ASCII word or whitespace, preserve standard 1-step LTR movement.
+        if !isCursorOnHebrew {
             return isLeft ? "\u{1B}[D" : "\u{1B}[C"
         }
 
-        let ctLine = CTLineCreateWithAttributedString(attrString)
-        let lineWidth = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
-        let lineX = isRTL ? max(paddingLeft, bounds.width - paddingRight - lineWidth) : paddingLeft
-
-        struct VisualGlyph {
-            let col: Int
-            let x: CGFloat
-        }
-        var glyphs: [VisualGlyph] = []
-        let runs = CTLineGetGlyphRuns(ctLine) as! [CTRun]
-        for r in runs {
-            let count = CTRunGetGlyphCount(r)
-            var indices = [CFIndex](repeating: 0, count: count)
-            var positions = [CGPoint](repeating: .zero, count: count)
-            CTRunGetStringIndices(r, CFRangeMake(0, count), &indices)
-            CTRunGetPositions(r, CFRangeMake(0, count), &positions)
-            for i in 0..<count {
-                glyphs.append(VisualGlyph(col: indices[i], x: lineX + positions[i].x))
-            }
-        }
-
-        let endX = calculateCursorX(ctLine: ctLine, targetCol: lineLen, lineLen: lineLen, isRTL: isRTL, lineX: lineX)
-        glyphs.append(VisualGlyph(col: lineLen, x: endX))
-
-        let curX = calculateCursorX(ctLine: ctLine, targetCol: currentCol, lineLen: lineLen, isRTL: isRTL, lineX: lineX)
-
-        if isLeft {
-            let leftCandidates = glyphs.filter { $0.x < curX - 1.0 }
-            if let target = leftCandidates.max(by: { $0.x < $1.x }) {
-                let diff = target.col - currentCol
-                if diff > 0 {
-                    return String(repeating: "\u{1B}[C", count: min(50, diff))
-                } else if diff < 0 {
-                    return String(repeating: "\u{1B}[D", count: min(50, -diff))
-                }
-            }
-            return "\u{1B}[D"
-        } else {
-            let rightCandidates = glyphs.filter { $0.x > curX + 1.0 }
-            if let target = rightCandidates.min(by: { $0.x < $1.x }) {
-                let diff = target.col - currentCol
-                if diff > 0 {
-                    return String(repeating: "\u{1B}[C", count: min(50, diff))
-                } else if diff < 0 {
-                    return String(repeating: "\u{1B}[D", count: min(50, -diff))
-                }
-            }
-            return "\u{1B}[C"
-        }
+        // Inside a Hebrew word/run, Left arrow moves visually left (logical forward \e[C)
+        // and Right arrow moves visually right (logical backward \e[D).
+        // Each keystroke moves by EXACTLY ONE step — never jumping or repeating!
+        return isLeft ? "\u{1B}[C" : "\u{1B}[D"
     }
 
     private func hasHebrewCharacters(_ line: TerminalLine) -> Bool {
