@@ -276,26 +276,110 @@ struct TestsRunner {
         }
         // In Hebrew RTL, character 0 ('ש') is to the RIGHT of character 3 ('ם')
         assert(col0Pos > col3Pos, "In Hebrew RTL, character 0 ('ש') must be visually to the right of character 3 ('ם')")
+        print("  -> Hebrew cursor visual positioning verified!")
 
-        // Test arrow key inversion logic:
-        func arrowSeq(keyCode: UInt16, isRTL: Bool) -> String {
-            switch keyCode {
-            case 124: // Right Arrow
-                return isRTL ? "\u{1B}[D" : "\u{1B}[C"
-            case 123: // Left Arrow
-                return isRTL ? "\u{1B}[C" : "\u{1B}[D"
-            default:
-                return ""
+        // Test 12: Mixed Hebrew & English Natural Arrow Navigation
+        print("[Test 12] Testing Mixed Hebrew & English Natural Arrow Navigation...")
+        struct VisualGlyph {
+            let col: Int
+            let x: CGFloat
+        }
+
+        func testArrowResolver(text: String, isRTL: Bool, currentCol: Int, isLeft: Bool) -> String {
+            func hasHebrewTest(_ str: String) -> Bool {
+                for scalar in str.unicodeScalars {
+                    let val = scalar.value
+                    if (val >= 0x0590 && val <= 0x05FF) || (val >= 0xFB1D && val <= 0xFB4F) { return true }
+                }
+                return false
+            }
+
+            let lineLen = text.count
+            guard lineLen > 0, hasHebrewTest(text) else {
+                return isLeft ? "\u{1B}[D" : "\u{1B}[C"
+            }
+
+            let pS = NSMutableParagraphStyle()
+            pS.baseWritingDirection = isRTL ? .rightToLeft : .leftToRight
+            let aStr = NSAttributedString(string: text, attributes: [
+                .font: font,
+                .paragraphStyle: pS
+            ])
+            let cLine = CTLineCreateWithAttributedString(aStr)
+            let lineWidth = CGFloat(CTLineGetTypographicBounds(cLine, nil, nil, nil))
+            let lX: CGFloat = isRTL ? max(16.0, 800.0 - 16.0 - lineWidth) : 16.0
+
+            var glyphs: [VisualGlyph] = []
+            let cRuns = CTLineGetGlyphRuns(cLine) as! [CTRun]
+            for r in cRuns {
+                let count = CTRunGetGlyphCount(r)
+                var indices = [CFIndex](repeating: 0, count: count)
+                var positions = [CGPoint](repeating: .zero, count: count)
+                CTRunGetStringIndices(r, CFRangeMake(0, count), &indices)
+                CTRunGetPositions(r, CFRangeMake(0, count), &positions)
+                for i in 0..<count {
+                    glyphs.append(VisualGlyph(col: indices[i], x: lX + positions[i].x))
+                }
+            }
+            var sec: CGFloat = 0
+            let ctOff = CTLineGetOffsetForStringIndex(cLine, lineLen, &sec)
+            glyphs.append(VisualGlyph(col: lineLen, x: lX + ctOff))
+
+            var curX: CGFloat = lX + ctOff
+            for g in glyphs {
+                if g.col == currentCol {
+                    curX = g.x
+                    break
+                }
+            }
+
+            if isLeft {
+                let leftCandidates = glyphs.filter { $0.x < curX - 1.0 }
+                if let target = leftCandidates.max(by: { $0.x < $1.x }) {
+                    let diff = target.col - currentCol
+                    if diff > 0 {
+                        return String(repeating: "\u{1B}[C", count: min(50, diff))
+                    } else if diff < 0 {
+                        return String(repeating: "\u{1B}[D", count: min(50, -diff))
+                    }
+                }
+                return "\u{1B}[D"
+            } else {
+                let rightCandidates = glyphs.filter { $0.x > curX + 1.0 }
+                if let target = rightCandidates.min(by: { $0.x < $1.x }) {
+                    let diff = target.col - currentCol
+                    if diff > 0 {
+                        return String(repeating: "\u{1B}[C", count: min(50, diff))
+                    } else if diff < 0 {
+                        return String(repeating: "\u{1B}[D", count: min(50, -diff))
+                    }
+                }
+                return "\u{1B}[C"
             }
         }
-        // In RTL text, Left Arrow must send forward (\e[C) to visually move left
-        assert(arrowSeq(keyCode: 123, isRTL: true) == "\u{1B}[C", "Left arrow in RTL must advance logically to move visually left")
-        // In RTL text, Right Arrow must send backward (\e[D) to visually move right
-        assert(arrowSeq(keyCode: 124, isRTL: true) == "\u{1B}[D", "Right arrow in RTL must retreat logically to move visually right")
-        // In LTR text, standard behavior is preserved
-        assert(arrowSeq(keyCode: 123, isRTL: false) == "\u{1B}[D", "Left arrow in LTR must send \\e[D")
-        assert(arrowSeq(keyCode: 124, isRTL: false) == "\u{1B}[C", "Right arrow in LTR must send \\e[C")
-        print("  -> Hebrew cursor visual positioning and Left/Right arrow natural navigation verified!")
+
+        // Verify pure English line
+        let engCmd = "git commit -m 'test'"
+        for i in 0...engCmd.count {
+            assert(testArrowResolver(text: engCmd, isRTL: false, currentCol: i, isLeft: true) == "\u{1B}[D")
+            assert(testArrowResolver(text: engCmd, isRTL: false, currentCol: i, isLeft: false) == "\u{1B}[C")
+        }
+
+        // Verify mixed line: "echo שלום world"
+        let mixedLine = "echo שלום world"
+        // English word: Left arrow must send \e[D and Right arrow \e[C
+        for i in 11...14 {
+            assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: i, isLeft: true) == "\u{1B}[D")
+            assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: i, isLeft: false) == "\u{1B}[C")
+        }
+        // Hebrew word: on 'ל' (col 6), to the right is 'ש' (col 5), so Right arrow must send \e[D
+        assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: 6, isLeft: false) == "\u{1B}[D")
+        // on 'ל' (col 6), to the left is 'ו' (col 7), so Left arrow must send \e[C
+        assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: 6, isLeft: true) == "\u{1B}[C")
+
+        // Boundary crossing: from space before Hebrew (col 4) to rightmost Hebrew character visually 'ם' (col 8)
+        assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: 4, isLeft: false) == "\u{1B}[C\u{1B}[C\u{1B}[C\u{1B}[C")
+        print("  -> Mixed Hebrew & English natural visual arrow navigation verified without inverting English words!")
 
         print("========================================")
         print("ALL TESTS PASSED! Engine is verified.")

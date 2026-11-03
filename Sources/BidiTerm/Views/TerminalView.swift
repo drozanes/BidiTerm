@@ -426,27 +426,9 @@ public final class TerminalView: NSView {
         // 2. If targetCol is at or past the end of the text (insertion point):
         if targetCol >= lineLen {
             let extra = CGFloat(targetCol - lineLen) * charWidth
-            for r in runs {
-                let count = CTRunGetGlyphCount(r)
-                var indices = [CFIndex](repeating: 0, count: count)
-                var positions = [CGPoint](repeating: .zero, count: count)
-                CTRunGetStringIndices(r, CFRangeMake(0, count), &indices)
-                CTRunGetPositions(r, CFRangeMake(0, count), &positions)
-                let isLastRTL = CTRunGetStatus(r).contains(.rightToLeft)
-
-                for i in 0..<count {
-                    if indices[i] == lineLen - 1 {
-                        let lastX = lineX + positions[i].x
-                        if isLastRTL {
-                            // In RTL, the next character will be placed to the LEFT of the last character
-                            return lastX - charWidth - extra
-                        } else {
-                            // In LTR, the next character will be placed to the RIGHT of the last character
-                            return lastX + charWidth + extra
-                        }
-                    }
-                }
-            }
+            var sec: CGFloat = 0
+            let ctOff = CTLineGetOffsetForStringIndex(ctLine, lineLen, &sec)
+            return lineX + ctOff + extra
         }
 
         return lineX + CGFloat(targetCol) * charWidth
@@ -664,11 +646,9 @@ public final class TerminalView: NSView {
         case 126: return "\u{1B}[A"   // Up Arrow
         case 125: return "\u{1B}[B"   // Down Arrow
         case 124: // Right Arrow
-            // In RTL context, moving visually to the Right corresponds to moving backwards in memory (\e[D)
-            return isCursorAtRTL() ? "\u{1B}[D" : "\u{1B}[C"
+            return arrowSequenceForVisualDirection(isLeft: false)
         case 123: // Left Arrow
-            // In RTL context, moving visually to the Left corresponds to moving forwards in memory (\e[C)
-            return isCursorAtRTL() ? "\u{1B}[C" : "\u{1B}[D"
+            return arrowSequenceForVisualDirection(isLeft: true)
         case 115: return "\u{1B}[H"   // Home
         case 119: return "\u{1B}[F"   // End
         case 116: return "\u{1B}[5~"  // Page Up
@@ -678,35 +658,86 @@ public final class TerminalView: NSView {
         }
     }
 
-    private func isCursorAtRTL() -> Bool {
-        guard let line = buffer.line(at: buffer.cursorRow) else { return false }
-        let col = buffer.cursorCol
-
-        // 1. Check cell at current cursor position
-        if col < line.cells.count {
-            let ch = line.cells[col].char
-            if isHebrewChar(ch) { return true }
+    private func arrowSequenceForVisualDirection(isLeft: Bool) -> String {
+        guard let line = buffer.line(at: buffer.cursorRow) else {
+            return isLeft ? "\u{1B}[D" : "\u{1B}[C"
         }
 
-        // 2. Check cell immediately before cursor (insertion point after Hebrew word)
-        if col > 0 && col - 1 < line.cells.count {
-            let prevCh = line.cells[col - 1].char
-            if isHebrewChar(prevCh) { return true }
+        // Fast-path: if text contains no Hebrew characters, visual order is strictly LTR.
+        // Arrow keys move naturally: Left -> \e[D (backward), Right -> \e[C (forward).
+        if !hasHebrewCharacters(line) {
+            return isLeft ? "\u{1B}[D" : "\u{1B}[C"
         }
 
-        // 3. Check if line as a whole is cached as RTL
-        if line.isCachedRTL == true {
-            return true
+        let (attrString, isRTL) = buildAttributedString(for: line)
+        let lineLen = attrString.length
+        guard lineLen > 0 else {
+            return isLeft ? "\u{1B}[D" : "\u{1B}[C"
         }
 
-        return false
+        let currentCol = buffer.cursorCol
+        if currentCol > lineLen + 10 {
+            return isLeft ? "\u{1B}[D" : "\u{1B}[C"
+        }
+
+        let ctLine = CTLineCreateWithAttributedString(attrString)
+        let lineWidth = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
+        let lineX = isRTL ? max(paddingLeft, bounds.width - paddingRight - lineWidth) : paddingLeft
+
+        struct VisualGlyph {
+            let col: Int
+            let x: CGFloat
+        }
+        var glyphs: [VisualGlyph] = []
+        let runs = CTLineGetGlyphRuns(ctLine) as! [CTRun]
+        for r in runs {
+            let count = CTRunGetGlyphCount(r)
+            var indices = [CFIndex](repeating: 0, count: count)
+            var positions = [CGPoint](repeating: .zero, count: count)
+            CTRunGetStringIndices(r, CFRangeMake(0, count), &indices)
+            CTRunGetPositions(r, CFRangeMake(0, count), &positions)
+            for i in 0..<count {
+                glyphs.append(VisualGlyph(col: indices[i], x: lineX + positions[i].x))
+            }
+        }
+
+        let endX = calculateCursorX(ctLine: ctLine, targetCol: lineLen, lineLen: lineLen, isRTL: isRTL, lineX: lineX)
+        glyphs.append(VisualGlyph(col: lineLen, x: endX))
+
+        let curX = calculateCursorX(ctLine: ctLine, targetCol: currentCol, lineLen: lineLen, isRTL: isRTL, lineX: lineX)
+
+        if isLeft {
+            let leftCandidates = glyphs.filter { $0.x < curX - 1.0 }
+            if let target = leftCandidates.max(by: { $0.x < $1.x }) {
+                let diff = target.col - currentCol
+                if diff > 0 {
+                    return String(repeating: "\u{1B}[C", count: min(50, diff))
+                } else if diff < 0 {
+                    return String(repeating: "\u{1B}[D", count: min(50, -diff))
+                }
+            }
+            return "\u{1B}[D"
+        } else {
+            let rightCandidates = glyphs.filter { $0.x > curX + 1.0 }
+            if let target = rightCandidates.min(by: { $0.x < $1.x }) {
+                let diff = target.col - currentCol
+                if diff > 0 {
+                    return String(repeating: "\u{1B}[C", count: min(50, diff))
+                } else if diff < 0 {
+                    return String(repeating: "\u{1B}[D", count: min(50, -diff))
+                }
+            }
+            return "\u{1B}[C"
+        }
     }
 
-    private func isHebrewChar(_ ch: Character) -> Bool {
-        for scalar in ch.unicodeScalars {
-            let val = scalar.value
-            if (val >= 0x0590 && val <= 0x05FF) || (val >= 0xFB1D && val <= 0xFB4F) {
-                return true
+    private func hasHebrewCharacters(_ line: TerminalLine) -> Bool {
+        for cell in line.cells {
+            for scalar in cell.char.unicodeScalars {
+                let val = scalar.value
+                if (val >= 0x0590 && val <= 0x05FF) || (val >= 0xFB1D && val <= 0xFB4F) {
+                    return true
+                }
             }
         }
         return false
