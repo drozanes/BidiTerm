@@ -190,6 +190,23 @@ struct TestsRunner {
         assert(loadedSession?.activeIndex == 1, "Session activeIndex should match")
         print("  -> TabSessionManager handles session persistence and recently closed tab restoration (Cmd+Shift+T) flawlessly!")
 
+        // Test 9: Shell Integration & Prompt Styling
+        print("[Test 9] Testing ShellIntegrationManager & Prompt Styling...")
+        let integrationDir = ShellIntegrationManager.shared.setupShellIntegration()
+        assert(!integrationDir.isEmpty, "Integration directory should not be empty")
+
+        let zshrcURL = URL(fileURLWithPath: integrationDir).appendingPathComponent(".zshrc")
+        let zshrcContent = try? String(contentsOf: zshrcURL, encoding: .utf8)
+        assert(zshrcContent != nil, ".zshrc must exist in shell integration directory")
+        assert(zshrcContent!.contains("PROMPT="), ".zshrc must define custom prompt")
+        assert(zshrcContent!.contains("vcs_info"), ".zshrc must configure git vcs_info")
+
+        ShellIntegrationManager.shared.currentStyle = .styledUserHost
+        assert(ShellIntegrationManager.shared.currentStyle == .styledUserHost, "Style should be styledUserHost")
+        let styledContent = try? String(contentsOf: zshrcURL, encoding: .utf8)
+        assert(styledContent!.contains("%n") && styledContent!.contains("%m"), "styledUserHost prompt must include user and host")
+        print("  -> ShellIntegrationManager generates complete zsh integration with user-selected prompt styling!")
+
         print("========================================")
         print("ALL TESTS PASSED! Engine is verified.")
         print("========================================")

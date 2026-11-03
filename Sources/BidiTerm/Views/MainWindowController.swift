@@ -456,4 +456,15 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     @objc public func showShortcutsAction(_ sender: Any?) {
         ShortcutsWindowController.shared.toggle()
     }
+
+    @objc public func changePromptStyleAction(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let style = PromptStyle(rawValue: raw) else { return }
+        ShellIntegrationManager.shared.currentStyle = style
+        if let menu = sender.menu {
+            for item in menu.items {
+                item.state = (item == sender) ? .on : .off
+            }
+        }
+    }
 }

@@ -29,6 +29,9 @@ public final class PTYSession {
         self.cols = cols
         self.rows = rows
 
+        // Setup shell integration directory for BidiTerm custom prompt styling
+        let integrationDir = ShellIntegrationManager.shared.setupShellIntegration()
+
         var master: Int32 = 0
         var win = winsize(ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0)
 
@@ -40,6 +43,9 @@ public final class PTYSession {
 
         if pid == 0 {
             // Child process: setup environment and execute shell
+            setenv("ZDOTDIR", integrationDir, 1)
+            setenv("TERM_PROGRAM", "BidiTerm", 1)
+            setenv("TERM_PROGRAM_VERSION", "1.0", 1)
             setenv("TERM", "xterm-256color", 1)
             setenv("COLORTERM", "truecolor", 1)
             if getenv("LANG") == nil {

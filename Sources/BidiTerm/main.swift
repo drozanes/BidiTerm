@@ -78,6 +78,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(withTitle: "Bigger Font", action: #selector(zoomInAction(_:)), keyEquivalent: "+")
         viewMenu.addItem(withTitle: "Smaller Font", action: #selector(zoomOutAction(_:)), keyEquivalent: "-")
         viewMenu.addItem(withTitle: "Default Font Size", action: #selector(zoomResetAction(_:)), keyEquivalent: "0")
+        viewMenu.addItem(NSMenuItem.separator())
+
+        let promptStyleItem = NSMenuItem(title: "Prompt Style", action: nil, keyEquivalent: "")
+        let promptStyleMenu = NSMenu(title: "Prompt Style")
+        promptStyleItem.submenu = promptStyleMenu
+
+        for style in PromptStyle.allCases {
+            let item = NSMenuItem(title: style.displayName, action: #selector(MainWindowController.changePromptStyleAction(_:)), keyEquivalent: "")
+            item.representedObject = style.rawValue
+            item.state = (style == ShellIntegrationManager.shared.currentStyle) ? .on : .off
+            promptStyleMenu.addItem(item)
+        }
+        viewMenu.addItem(promptStyleItem)
 
         // 5. Window Menu
         let windowMenuItem = NSMenuItem()
