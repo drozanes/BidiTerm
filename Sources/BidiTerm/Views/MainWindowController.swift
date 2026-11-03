@@ -8,23 +8,29 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
 
     public private(set) var tabs: [TerminalTab] = []
     public private(set) var activeTab: TerminalTab?
+    public private(set) var tabBarPosition: TabBarPosition = .top
 
     private var isSearchBarVisible: Bool = false
     private var cwdPollingTimer: Timer?
 
-    public convenience init() {
+    public init() {
         let window = NSWindow(
             contentRect: NSRect(x: 100, y: 100, width: 920, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        self.init(window: window)
+        self.tabBarPosition = TabSessionManager.shared.tabBarPosition
+        super.init(window: window)
         window.delegate = self
         setupWindow()
         setupUI()
         setupCwdPolling()
         restoreOrInitializeTabs()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
     deinit {
@@ -46,31 +52,25 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     private func setupUI() {
         guard let window = self.window, let contentView = window.contentView else { return }
 
-        let bounds = contentView.bounds
-
-        // 1. Tab Bar (at the top, with room for traffic light buttons)
-        tabBarView = TabBarView(frame: NSRect(x: 0, y: bounds.height - TabBarView.height, width: bounds.width, height: TabBarView.height))
-        tabBarView.autoresizingMask = [.width, .minYMargin]
+        // 1. Tab Bar View (supports both Top pane and Left pane)
+        tabBarView = TabBarView(frame: .zero)
+        tabBarView.position = tabBarPosition
         tabBarView.delegate = self
         contentView.addSubview(tabBarView)
 
-        // 2. Search Bar (hidden by default under Tab Bar)
-        searchBarView = TerminalSearchBarView(frame: NSRect(x: 0, y: bounds.height - TabBarView.height - TerminalSearchBarView.height, width: bounds.width, height: TerminalSearchBarView.height))
-        searchBarView.autoresizingMask = [.width, .minYMargin]
+        // 2. Search Bar View
+        searchBarView = TerminalSearchBarView(frame: .zero)
         searchBarView.delegate = self
         searchBarView.isHidden = true
         contentView.addSubview(searchBarView)
 
         // 3. Bottom Status Bar (with Warp-style [ 📁 ~/Dev ] pill and shortcuts trigger)
-        bottomStatusBarView = BottomStatusBarView(frame: NSRect(x: 0, y: 0, width: bounds.width, height: BottomStatusBarView.height))
-        bottomStatusBarView.autoresizingMask = [.width, .maxYMargin]
+        bottomStatusBarView = BottomStatusBarView(frame: .zero)
         bottomStatusBarView.delegate = self
         contentView.addSubview(bottomStatusBarView)
 
-        // 4. Content Container for active terminal (in between search/tab bar and bottom status bar)
-        let contentH = bounds.height - TabBarView.height - BottomStatusBarView.height
-        contentContainerView = NSView(frame: NSRect(x: 0, y: BottomStatusBarView.height, width: bounds.width, height: contentH))
-        contentContainerView.autoresizingMask = [.width, .height]
+        // 4. Content Container for active terminal
+        contentContainerView = NSView(frame: .zero)
         contentContainerView.wantsLayer = true
         contentContainerView.layer?.backgroundColor = TerminalPalette.defaultBackground.cgColor
         contentView.addSubview(contentContainerView)
@@ -82,28 +82,52 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
         guard let window = self.window, let contentView = window.contentView else { return }
 
         let bounds = contentView.bounds
-        let tabH = TabBarView.height
         let statusH = BottomStatusBarView.height
         let searchH = isSearchBarVisible ? TerminalSearchBarView.height : 0.0
 
-        // Pinned to Top
-        tabBarView.frame = NSRect(x: 0, y: bounds.height - tabH, width: bounds.width, height: tabH)
+        if tabBarPosition == .left {
+            let tabW = TabBarView.leftWidth
 
-        // Search Bar below Tab Bar
-        if isSearchBarVisible {
-            searchBarView.frame = NSRect(x: 0, y: bounds.height - tabH - searchH, width: bounds.width, height: searchH)
-            searchBarView.isHidden = false
+            // 1. Tab Bar on Left (Sidebar)
+            tabBarView.frame = NSRect(x: 0, y: 0, width: tabW, height: bounds.height)
+
+            // 2. Search Bar at Top of Content Area
+            if isSearchBarVisible {
+                searchBarView.frame = NSRect(x: tabW, y: bounds.height - searchH, width: bounds.width - tabW, height: searchH)
+                searchBarView.isHidden = false
+            } else {
+                searchBarView.isHidden = true
+            }
+
+            // 3. Bottom Status Bar
+            bottomStatusBarView.frame = NSRect(x: tabW, y: 0, width: bounds.width - tabW, height: statusH)
+
+            // 4. Terminal Content Container
+            let contentY = statusH
+            let contentH = max(10, bounds.height - searchH - statusH)
+            contentContainerView.frame = NSRect(x: tabW, y: contentY, width: max(10, bounds.width - tabW), height: contentH)
         } else {
-            searchBarView.isHidden = true
+            let tabH = TabBarView.topHeight
+
+            // 1. Tab Bar on Top
+            tabBarView.frame = NSRect(x: 0, y: bounds.height - tabH, width: bounds.width, height: tabH)
+
+            // 2. Search Bar below Tab Bar
+            if isSearchBarVisible {
+                searchBarView.frame = NSRect(x: 0, y: bounds.height - tabH - searchH, width: bounds.width, height: searchH)
+                searchBarView.isHidden = false
+            } else {
+                searchBarView.isHidden = true
+            }
+
+            // 3. Bottom Status Bar
+            bottomStatusBarView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: statusH)
+
+            // 4. Terminal Content Container
+            let contentY = statusH
+            let contentH = max(10, bounds.height - tabH - searchH - statusH)
+            contentContainerView.frame = NSRect(x: 0, y: contentY, width: bounds.width, height: contentH)
         }
-
-        // Pinned to Bottom
-        bottomStatusBarView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: statusH)
-
-        // Terminal Content Container
-        let contentY = statusH
-        let contentH = max(10, bounds.height - tabH - searchH - statusH)
-        contentContainerView.frame = NSRect(x: 0, y: contentY, width: bounds.width, height: contentH)
 
         if let active = activeTab {
             active.terminalView.frame = contentContainerView.bounds
@@ -130,7 +154,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
            !saved.tabs.isEmpty {
             for tabState in saved.tabs {
                 let dir = FileManager.default.fileExists(atPath: tabState.workingDirectory) ? tabState.workingDirectory : NSHomeDirectory()
-                createNewTab(directory: dir, title: tabState.title, autoSelect: false)
+                createNewTab(directory: dir, title: tabState.title, isCustomTitle: tabState.isCustomTitle, autoSelect: false)
             }
             let targetIndex = min(saved.activeIndex, tabs.count - 1)
             if targetIndex >= 0 {
@@ -143,7 +167,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     }
 
     private func persistCurrentSession() {
-        let savedTabs = tabs.map { SavedTabState(workingDirectory: $0.currentDirectory, title: $0.title) }
+        let savedTabs = tabs.map { SavedTabState(workingDirectory: $0.currentDirectory, title: $0.title, isCustomTitle: $0.isCustomTitle) }
         let activeIdx = activeTab != nil ? (tabs.firstIndex(where: { $0.id == activeTab!.id }) ?? 0) : 0
         TabSessionManager.shared.saveSession(tabs: savedTabs, activeIndex: activeIdx)
     }
@@ -151,10 +175,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     // MARK: - Tab Management
 
     @discardableResult
-    public func createNewTab(directory: String? = nil, title: String? = nil, autoSelect: Bool = true) -> TerminalTab {
+    public func createNewTab(directory: String? = nil, title: String? = nil, isCustomTitle: Bool = false, autoSelect: Bool = true) -> TerminalTab {
         // Default opening path is the user path (NSHomeDirectory())
         let targetDir = (directory != nil && !directory!.isEmpty) ? directory! : NSHomeDirectory()
-        let tab = TerminalTab(windowController: self, initialDirectory: targetDir, initialTitle: title)
+        let tab = TerminalTab(windowController: self, initialDirectory: targetDir, initialTitle: title, isCustomTitle: isCustomTitle)
         tabs.append(tab)
 
         tab.start()
@@ -171,12 +195,19 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
         closeTab(withID: active.id)
     }
 
+    public func closeOtherTabs(than id: UUID) {
+        let others = tabs.filter { $0.id != id }
+        for t in others {
+            closeTab(withID: t.id)
+        }
+    }
+
     public func closeTab(withID id: UUID) {
         guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
 
         let tabToClose = tabs[idx]
         // Save to recently closed tabs stack for Cmd+Shift+T restoration
-        TabSessionManager.shared.pushClosedTab(workingDirectory: tabToClose.currentDirectory, title: tabToClose.title)
+        TabSessionManager.shared.pushClosedTab(workingDirectory: tabToClose.currentDirectory, title: tabToClose.title, isCustomTitle: tabToClose.isCustomTitle)
 
         tabToClose.terminate()
         tabs.remove(at: idx)
@@ -199,7 +230,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     public func reopenLastClosedTab() {
         if let closed = TabSessionManager.shared.popClosedTab() {
             let dir = FileManager.default.fileExists(atPath: closed.workingDirectory) ? closed.workingDirectory : NSHomeDirectory()
-            createNewTab(directory: dir, title: closed.title)
+            createNewTab(directory: dir, title: closed.title, isCustomTitle: closed.isCustomTitle)
         }
     }
 
@@ -214,7 +245,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
 
         for tabState in saved.tabs {
             let dir = FileManager.default.fileExists(atPath: tabState.workingDirectory) ? tabState.workingDirectory : NSHomeDirectory()
-            createNewTab(directory: dir, title: tabState.title, autoSelect: false)
+            createNewTab(directory: dir, title: tabState.title, isCustomTitle: tabState.isCustomTitle, autoSelect: false)
         }
         let targetIndex = min(saved.activeIndex, tabs.count - 1)
         if targetIndex >= 0 {
@@ -282,7 +313,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     }
 
     private func updateTabBar() {
-        let items = tabs.map { TabItem(id: $0.id, title: $0.title) }
+        let items = tabs.map { TabItem(id: $0.id, title: $0.title, isCustomTitle: $0.isCustomTitle) }
         tabBarView.setTabs(items, selectedID: activeTab?.id)
     }
 
@@ -339,12 +370,27 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
         closeTab(withID: id)
     }
 
+    public func tabBar(_ tabBar: TabBarView, didCloseOtherTabsThanID id: UUID) {
+        closeOtherTabs(than: id)
+    }
+
+    public func tabBar(_ tabBar: TabBarView, didRenameTabWithID id: UUID, newTitle: String) {
+        if let tab = tabs.first(where: { $0.id == id }) {
+            tab.rename(to: newTitle)
+            persistCurrentSession()
+        }
+    }
+
     public func tabBarDidRequestNewTab(_ tabBar: TabBarView) {
         createNewTab()
     }
 
     public func tabBarDidRequestShortcutsHelp(_ tabBar: TabBarView) {
         ShortcutsWindowController.shared.toggle()
+    }
+
+    public func tabBarDidRequestTogglePosition(_ tabBar: TabBarView) {
+        toggleTabBarPositionAction(nil)
     }
 
     // MARK: - BottomStatusBarDelegate
@@ -455,6 +501,39 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
 
     @objc public func showShortcutsAction(_ sender: Any?) {
         ShortcutsWindowController.shared.toggle()
+    }
+
+    @objc public func renameActiveTabAction(_ sender: Any?) {
+        tabBarView.startEditingActiveTab()
+    }
+
+    @objc public func closeOtherTabsAction(_ sender: Any?) {
+        guard let active = activeTab else { return }
+        closeOtherTabs(than: active.id)
+    }
+
+    public func setTabBarPosition(_ newPosition: TabBarPosition) {
+        guard tabBarPosition != newPosition else { return }
+        tabBarPosition = newPosition
+        TabSessionManager.shared.tabBarPosition = newPosition
+        tabBarView.position = newPosition
+        layoutViews()
+    }
+
+    @objc public func toggleTabBarPositionAction(_ sender: Any?) {
+        let next: TabBarPosition = (tabBarPosition == .top) ? .left : .top
+        setTabBarPosition(next)
+    }
+
+    @objc public func setTabBarPositionAction(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let pos = TabBarPosition(rawValue: raw) else { return }
+        setTabBarPosition(pos)
+        if let menu = sender.menu {
+            for item in menu.items {
+                item.state = (item == sender) ? .on : .off
+            }
+        }
     }
 
     @objc public func changePromptStyleAction(_ sender: NSMenuItem) {

@@ -1,12 +1,39 @@
 import Foundation
 
+public enum TabBarPosition: String, CaseIterable, Codable {
+    case top = "top"
+    case left = "left"
+
+    public var displayName: String {
+        switch self {
+        case .top: return "Upper Pane (Top)"
+        case .left: return "Left Pane (Sidebar)"
+        }
+    }
+}
+
 public struct SavedTabState: Codable, Equatable {
     public let workingDirectory: String
     public let title: String
+    public let isCustomTitle: Bool
 
-    public init(workingDirectory: String, title: String) {
+    public init(workingDirectory: String, title: String, isCustomTitle: Bool = false) {
         self.workingDirectory = workingDirectory
         self.title = title
+        self.isCustomTitle = isCustomTitle
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case workingDirectory
+        case title
+        case isCustomTitle
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.workingDirectory = try container.decode(String.self, forKey: .workingDirectory)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.isCustomTitle = try container.decodeIfPresent(Bool.self, forKey: .isCustomTitle) ?? false
     }
 }
 
@@ -28,11 +55,26 @@ public final class TabSessionManager {
     private let sessionKey = "BidiTermSavedSession"
     private let restoreOnStartupKey = "BidiTermRestoreTabsOnStartup"
     private let recentlyClosedKey = "BidiTermRecentlyClosedTabs"
+    private let tabBarPositionKey = "BidiTermTabBarPosition"
 
     private var recentlyClosedStack: [SavedTabState] = []
 
     private init() {
         loadRecentlyClosed()
+    }
+
+    /// User preference controlling whether tabs appear in the upper pane or left pane
+    public var tabBarPosition: TabBarPosition {
+        get {
+            if let raw = UserDefaults.standard.string(forKey: tabBarPositionKey),
+               let pos = TabBarPosition(rawValue: raw) {
+                return pos
+            }
+            return .top
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: tabBarPositionKey)
+        }
     }
 
     /// User preference controlling whether previous session tabs are automatically restored on launch
@@ -50,8 +92,8 @@ public final class TabSessionManager {
 
     // MARK: - Recently Closed Tabs (Cmd+Shift+T)
 
-    public func pushClosedTab(workingDirectory: String, title: String) {
-        let state = SavedTabState(workingDirectory: workingDirectory, title: title)
+    public func pushClosedTab(workingDirectory: String, title: String, isCustomTitle: Bool = false) {
+        let state = SavedTabState(workingDirectory: workingDirectory, title: title, isCustomTitle: isCustomTitle)
         recentlyClosedStack.append(state)
         // Keep up to 30 closed tabs in the restoration history
         if recentlyClosedStack.count > 30 {

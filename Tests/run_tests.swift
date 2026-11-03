@@ -145,6 +145,8 @@ struct TestsRunner {
         assert(ShortcutRegistry.shortcuts(for: .tabs).contains { $0.title == "New Tab" }, "New Tab shortcut present")
         assert(ShortcutRegistry.shortcuts(for: .tabs).contains { $0.title == "Reopen Closed Tab" }, "Reopen Closed Tab shortcut present")
         assert(ShortcutRegistry.shortcuts(for: .tabs).contains { $0.title == "New Tab in Current Directory" }, "New Tab in Current Directory shortcut present")
+        assert(ShortcutRegistry.shortcuts(for: .tabs).contains { $0.title == "Rename Tab" }, "Rename Tab shortcut present")
+        assert(ShortcutRegistry.shortcuts(for: .tabs).contains { $0.title == "Toggle Tab Bar Position" }, "Toggle Tab Bar Position shortcut present")
         assert(ShortcutRegistry.shortcuts(for: .search).contains { $0.title == "Find in Terminal" }, "Find shortcut present")
         assert(ShortcutRegistry.shortcuts(for: .files).contains { $0.title == "Open File or Link" }, "Cmd+Click shortcut present")
         print("  -> ShortcutRegistry verified across all categories (tabs, search, files, clipboard, terminal)!")
@@ -380,6 +382,34 @@ struct TestsRunner {
         // Boundary crossing: from space before Hebrew (col 4) to rightmost Hebrew character visually 'ם' (col 8)
         assert(testArrowResolver(text: mixedLine, isRTL: false, currentCol: 4, isLeft: false) == "\u{1B}[C\u{1B}[C\u{1B}[C\u{1B}[C")
         print("  -> Mixed Hebrew & English natural visual arrow navigation verified without inverting English words!")
+
+        // Test 13: Tab Renaming & Tab Bar Position (.top vs .left)
+        print("[Test 13] Testing Tab Renaming & Tab Bar Position Persistence...")
+        // 1. TabBarPosition enum and persistence
+        TabSessionManager.shared.tabBarPosition = .left
+        assert(TabSessionManager.shared.tabBarPosition == .left, "TabBarPosition should be .left")
+        assert(TabSessionManager.shared.tabBarPosition.displayName == "Left Pane (Sidebar)")
+
+        TabSessionManager.shared.tabBarPosition = .top
+        assert(TabSessionManager.shared.tabBarPosition == .top, "TabBarPosition should be .top")
+        assert(TabSessionManager.shared.tabBarPosition.displayName == "Upper Pane (Top)")
+
+        // 2. SavedTabState with isCustomTitle
+        let customTabState = SavedTabState(workingDirectory: "/Users/drozanes/dev", title: "Custom Dev Session", isCustomTitle: true)
+        assert(customTabState.isCustomTitle == true, "isCustomTitle should be true")
+        assert(customTabState.title == "Custom Dev Session")
+
+        let encoded = try! JSONEncoder().encode(customTabState)
+        let decoded = try! JSONDecoder().decode(SavedTabState.self, from: encoded)
+        assert(decoded.isCustomTitle == true, "Decoded state must preserve isCustomTitle")
+        assert(decoded.title == "Custom Dev Session")
+
+        // 3. Backward compatibility (JSON without isCustomTitle defaults to false)
+        let legacyJSON = "{\"workingDirectory\":\"/tmp\",\"title\":\"📁 tmp\"}".data(using: .utf8)!
+        let legacyDecoded = try! JSONDecoder().decode(SavedTabState.self, from: legacyJSON)
+        assert(legacyDecoded.isCustomTitle == false, "Legacy decoded state should default isCustomTitle to false")
+        assert(legacyDecoded.title == "📁 tmp")
+        print("  -> Tab renaming data model, backward compatibility, and TabBarPosition (.top / .left) verified!")
 
         print("========================================")
         print("ALL TESTS PASSED! Engine is verified.")

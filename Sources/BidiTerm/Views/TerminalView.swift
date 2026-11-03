@@ -453,6 +453,9 @@ public final class TerminalView: NSView {
                 case 17: // Cmd+Shift+T
                     windowController?.reopenLastClosedTab()
                     return
+                case 15: // Cmd+Shift+R (Rename Tab)
+                    windowController?.renameActiveTabAction(nil)
+                    return
                 default:
                     break
                 }
@@ -464,6 +467,9 @@ public final class TerminalView: NSView {
                 case "o":
                     revealSelectedPathInFinder()
                     return
+                case "r":
+                    windowController?.renameActiveTabAction(nil)
+                    return
                 case "[":
                     windowController?.selectPreviousTab()
                     return
@@ -472,6 +478,31 @@ public final class TerminalView: NSView {
                     return
                 case "g":
                     windowController?.searchBarDidRequestPreviousMatch(windowController!.searchBarView)
+                    return
+                default:
+                    break
+                }
+            }
+
+            // Command + Option shortcuts
+            if flags.contains(.option) {
+                switch event.keyCode {
+                case 17: // Cmd+Option+T (New Tab in Current Directory)
+                    windowController?.newTabInCurrentDirectoryAction(nil)
+                    return
+                case 35: // Cmd+Option+P (Toggle Tab Bar Position: Top / Left)
+                    windowController?.toggleTabBarPositionAction(nil)
+                    return
+                default:
+                    break
+                }
+
+                switch event.charactersIgnoringModifiers?.lowercased() {
+                case "t":
+                    windowController?.newTabInCurrentDirectoryAction(nil)
+                    return
+                case "p":
+                    windowController?.toggleTabBarPositionAction(nil)
                     return
                 default:
                     break

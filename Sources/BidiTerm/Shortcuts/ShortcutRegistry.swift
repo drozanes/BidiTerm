@@ -70,6 +70,18 @@ public enum ShortcutRegistry {
             description: "Switches to the tab on the right",
             category: .tabs
         ),
+        TerminalShortcut(
+            keys: ["⌘", "⇧", "R"],
+            title: "Rename Tab",
+            description: "Renames the current tab (also double-click any tab)",
+            category: .tabs
+        ),
+        TerminalShortcut(
+            keys: ["⌘", "⌥", "P"],
+            title: "Toggle Tab Bar Position",
+            description: "Toggles tabs between Upper Pane (Top) and Left Pane (Sidebar)",
+            category: .tabs
+        ),
 
         // Search & Find
         TerminalShortcut(

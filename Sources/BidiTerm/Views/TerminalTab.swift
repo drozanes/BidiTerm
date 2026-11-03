@@ -3,6 +3,7 @@ import AppKit
 public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDelegate {
     public let id: UUID
     public var title: String
+    public var isCustomTitle: Bool
     public let initialDirectory: String
     public var currentDirectory: String
     public let buffer: TerminalBuffer
@@ -11,9 +12,10 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
     public let terminalView: TerminalView
     public weak var windowController: MainWindowController?
 
-    public init(id: UUID = UUID(), windowController: MainWindowController, initialDirectory: String? = nil, initialTitle: String? = nil) {
+    public init(id: UUID = UUID(), windowController: MainWindowController, initialDirectory: String? = nil, initialTitle: String? = nil, isCustomTitle: Bool = false) {
         self.id = id
         self.windowController = windowController
+        self.isCustomTitle = isCustomTitle
         let dir = (initialDirectory != nil && !initialDirectory!.isEmpty) ? initialDirectory! : NSHomeDirectory()
         self.initialDirectory = dir
         self.currentDirectory = dir
@@ -56,8 +58,8 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
         if let liveCwd = PathDetector.getProcessCwd(pid: ptySession.pid), !liveCwd.isEmpty {
             if liveCwd != currentDirectory {
                 currentDirectory = liveCwd
-                // If title represents a directory or default, keep it updated with current folder
-                if title.hasPrefix("📁") || title == "zsh" || title == "bash" {
+                // If not custom named and title represents a directory or default, keep it updated with current folder
+                if !isCustomTitle && (title.hasPrefix("📁") || title == "zsh" || title == "bash") {
                     let folderName = (liveCwd == NSHomeDirectory()) ? "~" : (liveCwd as NSString).lastPathComponent
                     self.title = "📁 \(folderName)"
                     windowController?.tabDidUpdateTitle(self)
@@ -65,6 +67,20 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
                 windowController?.tabDidUpdateDirectory(self)
             }
         }
+    }
+
+    public func rename(to newTitle: String) {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            // Revert to automatic directory title
+            self.isCustomTitle = false
+            let folderName = (currentDirectory == NSHomeDirectory()) ? "~" : (currentDirectory as NSString).lastPathComponent
+            self.title = "📁 \(folderName)"
+        } else {
+            self.isCustomTitle = true
+            self.title = trimmed
+        }
+        windowController?.tabDidUpdateTitle(self)
     }
 
     public func terminate() {
@@ -95,6 +111,7 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
     public func terminalBufferDidChangeTitle(_ buffer: TerminalBuffer, title: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            guard !self.isCustomTitle else { return }
             let newTitle = title.isEmpty ? "zsh" : title
             self.title = newTitle
             self.windowController?.tabDidUpdateTitle(self)

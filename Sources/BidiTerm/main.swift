@@ -48,7 +48,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reopenTabItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(reopenTabItem)
 
+        let renameTabItem = NSMenuItem(title: "Rename Tab...", action: #selector(MainWindowController.renameActiveTabAction(_:)), keyEquivalent: "r")
+        renameTabItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(renameTabItem)
+
         fileMenu.addItem(withTitle: "Close Tab", action: #selector(MainWindowController.closeTabAction(_:)), keyEquivalent: "w")
+        fileMenu.addItem(withTitle: "Close Other Tabs", action: #selector(MainWindowController.closeOtherTabsAction(_:)), keyEquivalent: "")
         fileMenu.addItem(NSMenuItem.separator())
 
         fileMenu.addItem(withTitle: "Restore Previous Session", action: #selector(MainWindowController.restorePreviousSessionAction(_:)), keyEquivalent: "")
@@ -78,6 +83,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(withTitle: "Bigger Font", action: #selector(zoomInAction(_:)), keyEquivalent: "+")
         viewMenu.addItem(withTitle: "Smaller Font", action: #selector(zoomOutAction(_:)), keyEquivalent: "-")
         viewMenu.addItem(withTitle: "Default Font Size", action: #selector(zoomResetAction(_:)), keyEquivalent: "0")
+        viewMenu.addItem(NSMenuItem.separator())
+
+        let tabBarPosItem = NSMenuItem(title: "Tab Bar Position", action: nil, keyEquivalent: "")
+        let tabBarPosMenu = NSMenu(title: "Tab Bar Position")
+        tabBarPosItem.submenu = tabBarPosMenu
+
+        for pos in TabBarPosition.allCases {
+            let item = NSMenuItem(title: pos.displayName, action: #selector(MainWindowController.setTabBarPositionAction(_:)), keyEquivalent: "")
+            item.representedObject = pos.rawValue
+            item.state = (pos == TabSessionManager.shared.tabBarPosition) ? .on : .off
+            tabBarPosMenu.addItem(item)
+        }
+        viewMenu.addItem(tabBarPosItem)
+
+        let toggleTabPosItem = NSMenuItem(title: "Toggle Tab Bar Position", action: #selector(MainWindowController.toggleTabBarPositionAction(_:)), keyEquivalent: "p")
+        toggleTabPosItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(toggleTabPosItem)
+
         viewMenu.addItem(NSMenuItem.separator())
 
         let promptStyleItem = NSMenuItem(title: "Prompt Style", action: nil, keyEquivalent: "")
