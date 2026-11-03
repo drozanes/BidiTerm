@@ -148,21 +148,24 @@ public final class PTYSession {
             var offset = 0
             let total = rawBuffer.count
 
-            while offset < total && masterFd >= 0 {
+            var attempts = 0
+            while offset < total && masterFd >= 0 && attempts < 500 {
                 // Chunk size: 512 bytes to safely fit inside macOS kernel PTY buffer (~1024 bytes)
                 let chunkSize = min(512, total - offset)
                 let n = Darwin.write(masterFd, base + offset, chunkSize)
 
                 if n > 0 {
                     offset += n
+                    attempts = 0
                 } else if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    attempts += 1
                     var pfd = pollfd(fd: masterFd, events: Int16(POLLOUT), revents: 0)
-                    let pollRes = poll(&pfd, 1, 100) // wait up to 100ms for buffer to drain
+                    let pollRes = poll(&pfd, 1, 50) // wait up to 50ms for buffer to drain
                     if pollRes < 0 && errno != EINTR {
                         break
                     }
                     if pollRes == 0 {
-                        usleep(2000)
+                        usleep(5000)
                     }
                 } else if n < 0 && errno == EINTR {
                     continue
