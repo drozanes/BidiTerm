@@ -14,6 +14,7 @@ public final class PTYSession {
     public var pid: pid_t { return childPid }
     private var readSource: DispatchSourceRead?
     private let readQueue = DispatchQueue(label: "com.biditerm.pty.read", qos: .userInteractive)
+    private let writeQueue = DispatchQueue(label: "com.biditerm.pty.write", qos: .userInteractive)
 
     public private(set) var isRunning: Bool = false
     public private(set) var cols: UInt16 = 80
@@ -134,10 +135,41 @@ public final class PTYSession {
     }
 
     public func write(data: Data) {
-        guard masterFd >= 0 else { return }
+        guard masterFd >= 0, !data.isEmpty else { return }
+        writeQueue.async { [weak self] in
+            guard let self = self, self.masterFd >= 0 else { return }
+            self.writeAll(data: data)
+        }
+    }
+
+    private func writeAll(data: Data) {
         data.withUnsafeBytes { rawBuffer in
-            guard let ptr = rawBuffer.baseAddress else { return }
-            _ = Darwin.write(masterFd, ptr, rawBuffer.count)
+            guard let base = rawBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            var offset = 0
+            let total = rawBuffer.count
+
+            while offset < total && masterFd >= 0 {
+                // Chunk size: 512 bytes to safely fit inside macOS kernel PTY buffer (~1024 bytes)
+                let chunkSize = min(512, total - offset)
+                let n = Darwin.write(masterFd, base + offset, chunkSize)
+
+                if n > 0 {
+                    offset += n
+                } else if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    var pfd = pollfd(fd: masterFd, events: Int16(POLLOUT), revents: 0)
+                    let pollRes = poll(&pfd, 1, 100) // wait up to 100ms for buffer to drain
+                    if pollRes < 0 && errno != EINTR {
+                        break
+                    }
+                    if pollRes == 0 {
+                        usleep(2000)
+                    }
+                } else if n < 0 && errno == EINTR {
+                    continue
+                } else {
+                    break
+                }
+            }
         }
     }
 

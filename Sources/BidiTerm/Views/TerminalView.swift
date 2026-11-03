@@ -416,10 +416,24 @@ public final class TerminalView: NSView {
     override public func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
-        // Handle Command shortcuts
+        // Handle Command shortcuts (with hardware keyCode fallback for Hebrew keyboard layouts)
         if flags.contains(.command) && !flags.contains([.control]) {
             // Command + Shift shortcuts
             if flags.contains(.shift) {
+                switch event.keyCode {
+                case 8: // Cmd+Shift+C
+                    handleScreenshotCapture()
+                    return
+                case 31: // Cmd+Shift+O
+                    revealSelectedPathInFinder()
+                    return
+                case 17: // Cmd+Shift+T
+                    windowController?.reopenLastClosedTab()
+                    return
+                default:
+                    break
+                }
+
                 switch event.charactersIgnoringModifiers?.lowercased() {
                 case "c", "s":
                     handleScreenshotCapture()
@@ -439,6 +453,43 @@ public final class TerminalView: NSView {
                 default:
                     break
                 }
+            }
+
+            // Command shortcuts by hardware keyCode (works in any keyboard layout: Hebrew, English, etc.)
+            switch event.keyCode {
+            case 9: // Cmd+V (Paste)
+                handlePaste()
+                return
+            case 8: // Cmd+C (Copy)
+                handleCopy()
+                return
+            case 17: // Cmd+T (New Tab)
+                windowController?.createNewTab()
+                return
+            case 13: // Cmd+W (Close Tab)
+                windowController?.closeCurrentTab()
+                return
+            case 3: // Cmd+F (Find)
+                windowController?.toggleSearchBar()
+                return
+            case 40: // Cmd+K (Clear buffer)
+                buffer.eraseInDisplay(mode: 3)
+                needsDisplay = true
+                return
+            case 24: // Cmd+= (+)
+                fontSize = min(32.0, fontSize + 1.0)
+                return
+            case 27: // Cmd+-
+                fontSize = max(9.0, fontSize - 1.0)
+                return
+            case 29: // Cmd+0
+                fontSize = 14.0
+                return
+            case 44: // Cmd+/
+                ShortcutsWindowController.shared.toggle()
+                return
+            default:
+                break
             }
 
             switch event.charactersIgnoringModifiers {
@@ -491,6 +542,13 @@ public final class TerminalView: NSView {
 
         // Handle Control combinations (e.g. Ctrl+C, Ctrl+D, Ctrl+Z)
         if flags.contains(.control) {
+            // First check hardware keyCode so Ctrl+C, Ctrl+D, etc. always work even in Hebrew keyboard layout
+            if let byte = controlCode(for: event.keyCode) {
+                ptySession?.write(data: Data([byte]))
+                resetScroll()
+                return
+            }
+
             if let chars = event.charactersIgnoringModifiers, let firstChar = chars.first {
                 let asciiVal = firstChar.asciiValue ?? 0
                 if asciiVal >= 64 && asciiVal <= 95 { // '@' to '_'
@@ -518,6 +576,41 @@ public final class TerminalView: NSView {
         if let characters = event.characters {
             ptySession?.write(string: characters)
             resetScroll()
+        }
+    }
+
+    private func controlCode(for keyCode: UInt16) -> UInt8? {
+        switch keyCode {
+        case 0: return 1   // Ctrl+A
+        case 11: return 2  // Ctrl+B
+        case 8: return 3   // Ctrl+C (SIGINT)
+        case 2: return 4   // Ctrl+D (EOF)
+        case 14: return 5  // Ctrl+E
+        case 3: return 6   // Ctrl+F
+        case 5: return 7   // Ctrl+G
+        case 4: return 8   // Ctrl+H (Backspace)
+        case 34: return 9  // Ctrl+I (Tab)
+        case 38: return 10 // Ctrl+J (Linefeed)
+        case 40: return 11 // Ctrl+K
+        case 37: return 12 // Ctrl+L (Clear screen)
+        case 46: return 13 // Ctrl+M (Return)
+        case 45: return 14 // Ctrl+N
+        case 31: return 15 // Ctrl+O
+        case 35: return 16 // Ctrl+P
+        case 12: return 17 // Ctrl+Q
+        case 15: return 18 // Ctrl+R
+        case 1: return 19  // Ctrl+S
+        case 17: return 20 // Ctrl+T
+        case 32: return 21 // Ctrl+U
+        case 9: return 22  // Ctrl+V
+        case 13: return 23 // Ctrl+W
+        case 7: return 24  // Ctrl+X
+        case 16: return 25 // Ctrl+Y
+        case 6: return 26  // Ctrl+Z (SIGTSTP)
+        case 33: return 27 // Ctrl+[ (Escape)
+        case 42: return 28 // Ctrl+\ (SIGQUIT)
+        case 30: return 29 // Ctrl+]
+        default: return nil
         }
     }
 
@@ -550,22 +643,31 @@ public final class TerminalView: NSView {
     // MARK: - Smart Paste & Clipboard
 
     public func handlePaste() {
+        let pasteboard = NSPasteboard.general
+
+        // 1. Text paste takes priority
+        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+            // Normalize line endings:
+            // In terminal raw PTY mode, CR (\r) is the canonical Enter/line-submission character.
+            // Converting both \r\n and \n to \r ensures multi-line pastes never hang or drop newlines in CLI tools.
+            let normalized = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
+
+            if buffer.bracketedPasteMode {
+                ptySession?.write(string: "\u{1B}[200~" + normalized + "\u{1B}[201~")
+            } else {
+                ptySession?.write(string: normalized)
+            }
+            resetScroll()
+            return
+        }
+
+        // 2. If no text, check for image data to save to file
         if ImageClipboardManager.shared.hasImage() {
             if let escapedPath = ImageClipboardManager.shared.saveClipboardImageToFile() {
                 ptySession?.write(string: "\(escapedPath) ")
                 resetScroll()
                 return
             }
-        }
-
-        let pasteboard = NSPasteboard.general
-        if let text = pasteboard.string(forType: .string) {
-            if buffer.bracketedPasteMode {
-                ptySession?.write(string: "\u{1B}[200~" + text + "\u{1B}[201~")
-            } else {
-                ptySession?.write(string: text)
-            }
-            resetScroll()
         }
     }
 

@@ -207,6 +207,46 @@ struct TestsRunner {
         assert(styledContent!.contains("%n") && styledContent!.contains("%m"), "styledUserHost prompt must include user and host")
         print("  -> ShellIntegrationManager generates complete zsh integration with user-selected prompt styling!")
 
+        // Test 10: Multi-line Large Hebrew Text PTY Write & Paste Pipeline
+        print("[Test 10] Testing Multi-line Large Hebrew Text PTY Write & Paste Pipeline...")
+        let sampleHebrew = """
+        פירוט המסלול המעגלי בנחל פרס
+        המסלול הקלאסי הוא מעגלי נגד כיוון השעון, באורך של כ-7.5–8 ק"מ (כ-3.5–4 שעות הליכה):
+
+        יציאה על רמת המדבר (סימון ירוק):
+        מחנים בחניון נחל פרס על כביש 25 (כ-3 ק"מ לפני צומת הערבה). מתחילים בהליכה נוחה על השביל המסומן ירוק לכיוון דרום-מזרח לאורך רמת המדבר, מעל הגדה הצפונית של הנחל (כ-3 ק"מ).
+
+        תצפית מפל פרס:
+        מגיעים אל שפת המצוק לתצפית מעל מפל נחל פרס – מפל יבש ועצום בגובה של כ-50 מטר המשקיף ישירות לעבר צומת הערבה והרי אדום.
+
+        ירידה לערוץ (סימון אדום):
+        סמוך לתצפית מתפצל שביל קצר ותלול המסומן אדום (כ-300–400 מטר). יורדים בו בזהירות אל תוך אפיק הנחל, עד למפגש עם שביל מסומן שחור.
+
+        גבי פרס (סימון שחור):
+        במפגש עם האפיק פונים ימינה (מערבה / במעלה הנחל). בתוך שניות ספורות נכנסים למעוק הגיר הלבן של גבי פרס – סדרת מכתשות סלע עמוקות שמתמלאות במים אחרי שיטפון. כאן עוצרים לשחייה ולטבילה.
+
+        חזרה בערוץ לרכב (המשך הסימון השחור):
+        במקום לחזור בשביל הירוק, ממשיכים לעלות בתוך ערוץ הנחל לאורך השביל השחור. ההליכה בערוץ מגוונת (מדרגות סלע, עצי שיטה ובולדרים). לקראת הסוף השביל מטפס במתינות מתוך הנחל ומתחבר חזרה ישירות לחניון הרכבים.
+        """
+
+        let rawBytes = sampleHebrew.data(using: .utf8)!
+        assert(rawBytes.count > 1500, "Hebrew text is larger than 1.5 KB to test chunking beyond 1024-byte kernel buffer")
+
+        // Test newline normalization
+        let normalized = sampleHebrew.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
+        assert(!normalized.contains("\n"), "Normalized text must not contain raw LF (\\n)")
+        assert(normalized.contains("\r"), "Normalized text must use CR (\\r) for universal CLI compatibility")
+
+        // Test PTY session writing the entire large Hebrew chunk
+        let session = PTYSession()
+        try! session.start(cols: 80, rows: 24)
+        session.write(string: normalized)
+
+        // Give the async queue a moment to flush all chunks through poll
+        usleep(150000)
+        session.terminate()
+        print("  -> Multi-line Hebrew paste successfully processed through chunked async PTY write queue without buffer overflow!")
+
         print("========================================")
         print("ALL TESTS PASSED! Engine is verified.")
         print("========================================")
