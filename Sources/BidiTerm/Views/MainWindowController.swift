@@ -143,7 +143,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
 
     private func checkCurrentTabCwd() {
         guard let active = activeTab else { return }
-        active.checkCurrentDirectory()
+        active.checkProcessAndDirectory()
     }
 
     // MARK: - Tab Session Restoration
@@ -154,7 +154,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
            !saved.tabs.isEmpty {
             for tabState in saved.tabs {
                 let dir = FileManager.default.fileExists(atPath: tabState.workingDirectory) ? tabState.workingDirectory : NSHomeDirectory()
-                createNewTab(directory: dir, title: tabState.title, isCustomTitle: tabState.isCustomTitle, autoSelect: false)
+                createNewTab(directory: dir, title: tabState.title, isCustomTitle: tabState.isCustomTitle, customLabel: tabState.customLabel, autoSelect: false)
             }
             let targetIndex = min(saved.activeIndex, tabs.count - 1)
             if targetIndex >= 0 {
@@ -167,7 +167,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     }
 
     private func persistCurrentSession() {
-        let savedTabs = tabs.map { SavedTabState(workingDirectory: $0.currentDirectory, title: $0.title, isCustomTitle: $0.isCustomTitle) }
+        let savedTabs = tabs.map { SavedTabState(workingDirectory: $0.currentDirectory, title: $0.title, isCustomTitle: $0.isCustomTitle, customLabel: $0.customLabel) }
         let activeIdx = activeTab != nil ? (tabs.firstIndex(where: { $0.id == activeTab!.id }) ?? 0) : 0
         TabSessionManager.shared.saveSession(tabs: savedTabs, activeIndex: activeIdx)
     }
@@ -175,10 +175,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     // MARK: - Tab Management
 
     @discardableResult
-    public func createNewTab(directory: String? = nil, title: String? = nil, isCustomTitle: Bool = false, autoSelect: Bool = true) -> TerminalTab {
+    public func createNewTab(directory: String? = nil, title: String? = nil, isCustomTitle: Bool = false, customLabel: String? = nil, autoSelect: Bool = true) -> TerminalTab {
         // Default opening path is the user path (NSHomeDirectory())
         let targetDir = (directory != nil && !directory!.isEmpty) ? directory! : NSHomeDirectory()
-        let tab = TerminalTab(windowController: self, initialDirectory: targetDir, initialTitle: title, isCustomTitle: isCustomTitle)
+        let tab = TerminalTab(windowController: self, initialDirectory: targetDir, initialTitle: title, isCustomTitle: isCustomTitle, customLabel: customLabel)
         tabs.append(tab)
 
         tab.start()
@@ -207,7 +207,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
 
         let tabToClose = tabs[idx]
         // Save to recently closed tabs stack for Cmd+Shift+T restoration
-        TabSessionManager.shared.pushClosedTab(workingDirectory: tabToClose.currentDirectory, title: tabToClose.title, isCustomTitle: tabToClose.isCustomTitle)
+        TabSessionManager.shared.pushClosedTab(workingDirectory: tabToClose.currentDirectory, title: tabToClose.title, isCustomTitle: tabToClose.isCustomTitle, customLabel: tabToClose.customLabel)
 
         tabToClose.terminate()
         tabs.remove(at: idx)
@@ -230,7 +230,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     public func reopenLastClosedTab() {
         if let closed = TabSessionManager.shared.popClosedTab() {
             let dir = FileManager.default.fileExists(atPath: closed.workingDirectory) ? closed.workingDirectory : NSHomeDirectory()
-            createNewTab(directory: dir, title: closed.title, isCustomTitle: closed.isCustomTitle)
+            createNewTab(directory: dir, title: closed.title, isCustomTitle: closed.isCustomTitle, customLabel: closed.customLabel)
         }
     }
 
@@ -245,7 +245,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
 
         for tabState in saved.tabs {
             let dir = FileManager.default.fileExists(atPath: tabState.workingDirectory) ? tabState.workingDirectory : NSHomeDirectory()
-            createNewTab(directory: dir, title: tabState.title, isCustomTitle: tabState.isCustomTitle, autoSelect: false)
+            createNewTab(directory: dir, title: tabState.title, isCustomTitle: tabState.isCustomTitle, customLabel: tabState.customLabel, autoSelect: false)
         }
         let targetIndex = min(saved.activeIndex, tabs.count - 1)
         if targetIndex >= 0 {
@@ -313,7 +313,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     }
 
     private func updateTabBar() {
-        let items = tabs.map { TabItem(id: $0.id, title: $0.title, isCustomTitle: $0.isCustomTitle) }
+        let items = tabs.map { TabItem(id: $0.id, title: $0.title, isCustomTitle: $0.isCustomTitle, customLabel: $0.customLabel) }
         tabBarView.setTabs(items, selectedID: activeTab?.id)
     }
 
@@ -374,10 +374,38 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
         closeOtherTabs(than: id)
     }
 
-    public func tabBar(_ tabBar: TabBarView, didRenameTabWithID id: UUID, newTitle: String) {
+    public func tabBar(_ tabBar: TabBarView, didRequestRenameTabWithID id: UUID) {
         if let tab = tabs.first(where: { $0.id == id }) {
-            tab.rename(to: newTitle)
-            persistCurrentSession()
+            promptRenameTab(tab)
+        }
+    }
+
+    public func promptRenameTab(_ tab: TerminalTab) {
+        let alert = NSAlert()
+        alert.messageText = "Rename Tab"
+        alert.informativeText = "Enter a custom label for this tab.\nThis label will appear alongside the directory path:\n📁 \(tab.folderDisplayName) • <Label>"
+        alert.alertStyle = .informational
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        input.stringValue = tab.customLabel ?? ""
+        input.placeholderString = "e.g. Frontend, DB, or blank to reset"
+        alert.accessoryView = input
+
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Reset")
+
+        guard let window = self.window else { return }
+        alert.beginSheetModal(for: window) { [weak self, weak tab] response in
+            guard let self = self, let tab = tab else { return }
+            if response == .alertFirstButtonReturn {
+                let text = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                tab.setCustomLabel(text.isEmpty ? nil : text)
+                self.persistCurrentSession()
+            } else if response == .alertThirdButtonReturn {
+                tab.setCustomLabel(nil)
+                self.persistCurrentSession()
+            }
         }
     }
 
@@ -504,7 +532,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, T
     }
 
     @objc public func renameActiveTabAction(_ sender: Any?) {
-        tabBarView.startEditingActiveTab()
+        guard let active = activeTab else { return }
+        promptRenameTab(active)
     }
 
     @objc public func closeOtherTabsAction(_ sender: Any?) {

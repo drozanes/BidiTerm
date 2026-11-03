@@ -16,17 +16,20 @@ public struct SavedTabState: Codable, Equatable {
     public let workingDirectory: String
     public let title: String
     public let isCustomTitle: Bool
+    public let customLabel: String?
 
-    public init(workingDirectory: String, title: String, isCustomTitle: Bool = false) {
+    public init(workingDirectory: String, title: String, isCustomTitle: Bool = false, customLabel: String? = nil) {
         self.workingDirectory = workingDirectory
         self.title = title
         self.isCustomTitle = isCustomTitle
+        self.customLabel = customLabel
     }
 
     enum CodingKeys: String, CodingKey {
         case workingDirectory
         case title
         case isCustomTitle
+        case customLabel
     }
 
     public init(from decoder: Decoder) throws {
@@ -34,6 +37,7 @@ public struct SavedTabState: Codable, Equatable {
         self.workingDirectory = try container.decode(String.self, forKey: .workingDirectory)
         self.title = try container.decode(String.self, forKey: .title)
         self.isCustomTitle = try container.decodeIfPresent(Bool.self, forKey: .isCustomTitle) ?? false
+        self.customLabel = try container.decodeIfPresent(String.self, forKey: .customLabel)
     }
 }
 
@@ -92,8 +96,8 @@ public final class TabSessionManager {
 
     // MARK: - Recently Closed Tabs (Cmd+Shift+T)
 
-    public func pushClosedTab(workingDirectory: String, title: String, isCustomTitle: Bool = false) {
-        let state = SavedTabState(workingDirectory: workingDirectory, title: title, isCustomTitle: isCustomTitle)
+    public func pushClosedTab(workingDirectory: String, title: String, isCustomTitle: Bool = false, customLabel: String? = nil) {
+        let state = SavedTabState(workingDirectory: workingDirectory, title: title, isCustomTitle: isCustomTitle, customLabel: customLabel)
         recentlyClosedStack.append(state)
         // Keep up to 30 closed tabs in the restoration history
         if recentlyClosedStack.count > 30 {

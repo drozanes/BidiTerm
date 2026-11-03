@@ -4,6 +4,9 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
     public let id: UUID
     public var title: String
     public var isCustomTitle: Bool
+    public var customLabel: String?
+    public var conversationTitle: String?
+    public var oscTitle: String?
     public let initialDirectory: String
     public var currentDirectory: String
     public let buffer: TerminalBuffer
@@ -12,19 +15,29 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
     public let terminalView: TerminalView
     public weak var windowController: MainWindowController?
 
-    public init(id: UUID = UUID(), windowController: MainWindowController, initialDirectory: String? = nil, initialTitle: String? = nil, isCustomTitle: Bool = false) {
+    public init(id: UUID = UUID(),
+                windowController: MainWindowController,
+                initialDirectory: String? = nil,
+                initialTitle: String? = nil,
+                isCustomTitle: Bool = false,
+                customLabel: String? = nil) {
         self.id = id
         self.windowController = windowController
         self.isCustomTitle = isCustomTitle
+        self.customLabel = customLabel
+
         let dir = (initialDirectory != nil && !initialDirectory!.isEmpty) ? initialDirectory! : NSHomeDirectory()
         self.initialDirectory = dir
         self.currentDirectory = dir
 
-        if let explicitTitle = initialTitle, !explicitTitle.isEmpty {
-            self.title = explicitTitle
+        let folder = (dir == NSHomeDirectory()) ? "~" : (dir as NSString).lastPathComponent
+        if let explicit = customLabel, !explicit.isEmpty {
+            self.title = "📁 \(folder) • \(explicit)"
+            self.isCustomTitle = true
+        } else if let initial = initialTitle, !initial.isEmpty {
+            self.title = initial
         } else {
-            let folderName = (dir == NSHomeDirectory()) ? "~" : (dir as NSString).lastPathComponent
-            self.title = "📁 \(folderName)"
+            self.title = "📁 \(folder)"
         }
 
         self.buffer = TerminalBuffer(cols: 80, rows: 24)
@@ -45,6 +58,40 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
         }
     }
 
+    public var folderDisplayName: String {
+        if currentDirectory == NSHomeDirectory() {
+            return "~"
+        } else {
+            return (currentDirectory as NSString).lastPathComponent
+        }
+    }
+
+    public var formattedTitle: String {
+        let folder = folderDisplayName
+        if let custom = customLabel, !custom.isEmpty {
+            return "📁 \(folder) • \(custom)"
+        } else if let convo = conversationTitle, !convo.isEmpty {
+            return "📁 \(folder) • \(convo)"
+        } else if let osc = oscTitle, !osc.isEmpty, !isGenericShellTitle(osc) {
+            return "📁 \(folder) • \(osc)"
+        } else {
+            return "📁 \(folder)"
+        }
+    }
+
+    private func isGenericShellTitle(_ str: String) -> Bool {
+        let lower = str.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return lower == "zsh" || lower == "bash" || lower == "sh" || lower.contains("@")
+    }
+
+    public func updateTitleIfNeeded() {
+        let newTitle = formattedTitle
+        if self.title != newTitle {
+            self.title = newTitle
+            windowController?.tabDidUpdateTitle(self)
+        }
+    }
+
     public func start() {
         do {
             try ptySession.start(cols: UInt16(buffer.cols), rows: UInt16(buffer.rows), workingDirectory: initialDirectory)
@@ -53,34 +100,45 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
         }
     }
 
-    public func checkCurrentDirectory() {
+    public func checkProcessAndDirectory() {
         guard ptySession.pid > 0 else { return }
+
+        // 1. Check directory
         if let liveCwd = PathDetector.getProcessCwd(pid: ptySession.pid), !liveCwd.isEmpty {
             if liveCwd != currentDirectory {
                 currentDirectory = liveCwd
-                // If not custom named and title represents a directory or default, keep it updated with current folder
-                if !isCustomTitle && (title.hasPrefix("📁") || title == "zsh" || title == "bash") {
-                    let folderName = (liveCwd == NSHomeDirectory()) ? "~" : (liveCwd as NSString).lastPathComponent
-                    self.title = "📁 \(folderName)"
-                    windowController?.tabDidUpdateTitle(self)
-                }
                 windowController?.tabDidUpdateDirectory(self)
             }
         }
+
+        // 2. Check active tool / conversation title
+        let detected = CLIConversationDetector.detectToolInfo(ptyPid: ptySession.pid, workingDirectory: currentDirectory)
+        let newConvoTitle = detected?.conversationTitle
+        if newConvoTitle != self.conversationTitle {
+            self.conversationTitle = newConvoTitle
+        }
+
+        updateTitleIfNeeded()
     }
 
-    public func rename(to newTitle: String) {
-        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            // Revert to automatic directory title
-            self.isCustomTitle = false
-            let folderName = (currentDirectory == NSHomeDirectory()) ? "~" : (currentDirectory as NSString).lastPathComponent
-            self.title = "📁 \(folderName)"
-        } else {
+    public func checkCurrentDirectory() {
+        checkProcessAndDirectory()
+    }
+
+    public func setCustomLabel(_ newLabel: String?) {
+        let trimmed = newLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let t = trimmed, !t.isEmpty {
+            self.customLabel = t
             self.isCustomTitle = true
-            self.title = trimmed
+        } else {
+            self.customLabel = nil
+            self.isCustomTitle = false
         }
-        windowController?.tabDidUpdateTitle(self)
+        updateTitleIfNeeded()
+    }
+
+    public func rename(to newLabel: String) {
+        setCustomLabel(newLabel)
     }
 
     public func terminate() {
@@ -94,7 +152,7 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
             guard let self = self else { return }
             self.parser.feed(data: data)
             self.terminalView.needsDisplay = true
-            self.checkCurrentDirectory()
+            self.checkProcessAndDirectory()
         }
     }
 
@@ -111,10 +169,13 @@ public final class TerminalTab: NSObject, PTYSessionDelegate, TerminalBufferDele
     public func terminalBufferDidChangeTitle(_ buffer: TerminalBuffer, title: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            guard !self.isCustomTitle else { return }
-            let newTitle = title.isEmpty ? "zsh" : title
-            self.title = newTitle
-            self.windowController?.tabDidUpdateTitle(self)
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && !self.isGenericShellTitle(trimmed) {
+                self.oscTitle = trimmed
+            } else {
+                self.oscTitle = nil
+            }
+            self.updateTitleIfNeeded()
         }
     }
 
