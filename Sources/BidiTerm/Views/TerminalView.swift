@@ -602,8 +602,22 @@ public final class TerminalView: NSView {
             return
         }
 
-        // Handle Control combinations (e.g. Ctrl+C, Ctrl+D, Ctrl+Z)
-        if flags.contains(.control) {
+        // Handle Control combinations (e.g. Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+Left/Right)
+        if flags.contains(.control) && !flags.contains([.command]) {
+            // Ctrl + Arrow keys for word navigation (matches Option+Arrows)
+            switch event.keyCode {
+            case 123: // Ctrl+Left -> Word backward
+                ptySession?.write(string: "\u{1B}b")
+                resetScroll()
+                return
+            case 124: // Ctrl+Right -> Word forward
+                ptySession?.write(string: "\u{1B}f")
+                resetScroll()
+                return
+            default:
+                break
+            }
+
             // First check hardware keyCode so Ctrl+C, Ctrl+D, etc. always work even in Hebrew keyboard layout
             if let byte = controlCode(for: event.keyCode) {
                 ptySession?.write(data: Data([byte]))
