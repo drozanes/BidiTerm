@@ -110,7 +110,51 @@ public final class ShellIntegrationManager {
         # Restore ZDOTDIR to standard home directory for child subshells
         export ZDOTDIR="$HOME"
 
-        # Apply BidiTerm Prompt Styling
+        # ----------------------------------------------------------------------
+        # 1. Advanced Interactive Tab Completion & Arrow Menu Selection
+        # ----------------------------------------------------------------------
+        autoload -Uz compinit
+        compinit -C
+
+        # Interactive menu on Tab: cycle through suggestions with Tab or Arrow keys
+        zstyle ':completion:*' menu select
+        # Case-insensitive, fuzzy, and substring matching (e.g. 'cd r' -> 'cd rPPG-Toolbox')
+        zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
+        # Colorize completion items
+        zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+        zstyle ':completion:*:descriptions' format '%F{yellow}-- %d --%f'
+        zstyle ':completion:*:messages' format '%F{purple}-- %d --%f'
+        zstyle ':completion:*:warnings' format '%F{red}-- no matches found --%f'
+
+        # ----------------------------------------------------------------------
+        # 2. Command History Memory (Persistent Across Sessions & Tabs)
+        # ----------------------------------------------------------------------
+        HISTFILE="$HOME/.zsh_history"
+        HISTSIZE=50000
+        SAVEHIST=50000
+        setopt APPEND_HISTORY
+        setopt SHARE_HISTORY
+        setopt HIST_IGNORE_DUPS
+        setopt HIST_IGNORE_ALL_DUPS
+        setopt HIST_FIND_NO_DUPS
+        setopt HIST_REDUCE_BLANKS
+
+        # ----------------------------------------------------------------------
+        # 3. Smart Prefix-History Search via Up/Down Arrows & Word Navigation
+        # ----------------------------------------------------------------------
+        autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+        zle -N up-line-or-beginning-search
+        zle -N down-line-or-beginning-search
+        bindkey '^[[A' up-line-or-beginning-search
+        bindkey '^[[B' down-line-or-beginning-search
+        bindkey '^[b' backward-word
+        bindkey '^[f' forward-word
+        bindkey '^A' beginning-of-line
+        bindkey '^E' end-of-line
+
+        # ----------------------------------------------------------------------
+        # 4. Apply BidiTerm Prompt Styling & Git Integration
+        # ----------------------------------------------------------------------
         setopt PROMPT_SUBST
         autoload -Uz vcs_info
         zstyle ':vcs_info:*' enable git

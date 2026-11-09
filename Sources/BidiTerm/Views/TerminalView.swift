@@ -511,6 +511,14 @@ public final class TerminalView: NSView {
 
             // Command shortcuts by hardware keyCode (works in any keyboard layout: Hebrew, English, etc.)
             switch event.keyCode {
+            case 123: // Cmd+Left (Beginning of Line)
+                ptySession?.write(data: Data([1])) // Ctrl+A
+                resetScroll()
+                return
+            case 124: // Cmd+Right (End of Line)
+                ptySession?.write(data: Data([5])) // Ctrl+E
+                resetScroll()
+                return
             case 9: // Cmd+V (Paste)
                 handlePaste()
                 return
@@ -619,6 +627,22 @@ public final class TerminalView: NSView {
             }
         }
 
+        // Handle Option combinations (e.g. Option+Left / Option+Right for word navigation)
+        if flags.contains(.option) && !flags.contains([.command, .control]) {
+            switch event.keyCode {
+            case 123: // Option+Left -> Word backward
+                ptySession?.write(string: "\u{1B}b")
+                resetScroll()
+                return
+            case 124: // Option+Right -> Word forward
+                ptySession?.write(string: "\u{1B}f")
+                resetScroll()
+                return
+            default:
+                break
+            }
+        }
+
         // Handle Special Keys
         if let specialCode = specialKeySequence(for: event.keyCode) {
             ptySession?.write(string: specialCode)
@@ -670,7 +694,7 @@ public final class TerminalView: NSView {
 
     private func specialKeySequence(for keyCode: UInt16) -> String? {
         switch keyCode {
-        case 36: return "\r"          // Return
+        case 36, 76: return "\r"          // Return (36) and Keypad Enter (76)
         case 48: return "\t"          // Tab
         case 51: return "\u{7F}"      // Backspace
         case 53: return "\u{1B}"      // Escape
