@@ -47,6 +47,8 @@ public final class TerminalView: NSView {
     // Path Hover & Cmd+Click
     private var hoveredPath: DetectedPath?
     private var hoveredLocation: (lineIdx: Int, range: Range<Int>)?
+    private var pendingClickedLink: DetectedPath?
+    private var mouseDownLocation: NSPoint = .zero
     private var trackingArea: NSTrackingArea?
 
     // Scroll offset (0 = viewing bottom of buffer)
@@ -328,7 +330,7 @@ public final class TerminalView: NSView {
         var lastNonSpace = -1
         for i in stride(from: line.cells.count - 1, through: 0, by: -1) {
             let cell = line.cells[i]
-            if cell.char != " " || cell.style.bgColor != nil || cell.style.isInverse {
+            if cell.char != " " || cell.style.bgColor != nil || cell.style.isInverse || cell.hyperlinkURL != nil {
                 lastNonSpace = i
                 break
             }
@@ -342,25 +344,27 @@ public final class TerminalView: NSView {
         let relevantCells = line.cells[0...lastNonSpace]
         var currentChars = ""
         var currentStyle = relevantCells[0].style
+        var currentLink = relevantCells[0].hyperlinkURL
 
         for cell in relevantCells {
-            if cell.style == currentStyle {
+            if cell.style == currentStyle && cell.hyperlinkURL == currentLink {
                 currentChars.append(cell.char)
             } else {
-                appendRun(chars: currentChars, style: currentStyle, pStyle: pStyle, to: result)
+                appendRun(chars: currentChars, style: currentStyle, hyperlinkURL: currentLink, pStyle: pStyle, to: result)
                 currentChars = String(cell.char)
                 currentStyle = cell.style
+                currentLink = cell.hyperlinkURL
             }
         }
         if !currentChars.isEmpty {
-            appendRun(chars: currentChars, style: currentStyle, pStyle: pStyle, to: result)
+            appendRun(chars: currentChars, style: currentStyle, hyperlinkURL: currentLink, pStyle: pStyle, to: result)
         }
 
         line.cachedAttributedString = result
         return (result, isRTL)
     }
 
-    private func appendRun(chars: String, style: TerminalStyle, pStyle: NSParagraphStyle, to result: NSMutableAttributedString) {
+    private func appendRun(chars: String, style: TerminalStyle, hyperlinkURL: String? = nil, pStyle: NSParagraphStyle, to result: NSMutableAttributedString) {
         var attrs: [NSAttributedString.Key: Any] = [
             .paragraphStyle: pStyle,
             .foregroundColor: style.effectiveForeground(),
@@ -380,6 +384,10 @@ public final class TerminalView: NSView {
 
         if style.isUnderline {
             attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
+
+        if let link = hyperlinkURL {
+            attrs[.link] = link
         }
 
         result.append(NSAttributedString(string: chars, attributes: attrs))
@@ -899,31 +907,77 @@ public final class TerminalView: NSView {
         return true
     }
 
-    // MARK: - Mouse Events, Hover & Cmd+Click
+    // MARK: - Link Detection & Geometry
 
-    override public func mouseMoved(with event: NSEvent) {
-        if event.modifierFlags.contains(.command) {
-            let pt = convert(event.locationInWindow, from: nil)
-            let row = Int((pt.y - paddingTop) / lineHeight)
-            let col = max(0, Int((pt.x - paddingLeft) / charWidth))
-            let totalLines = buffer.totalLineCount
-            let bottomIndex = max(0, totalLines - 1 - scrollOffset)
-            let startIndex = max(0, bottomIndex - buffer.rows + 1)
-            let lineIdx = startIndex + row
+    private func logicalColumn(for point: CGPoint, line: TerminalLine, lineIdx: Int) -> Int {
+        let (attrString, isRTL) = buildAttributedString(for: line)
+        if attrString.length > 0 {
+            let ctLine = CTLineCreateWithAttributedString(attrString)
+            let lineWidth = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
+            let lineX = isRTL ? max(paddingLeft, bounds.width - paddingRight - lineWidth) : paddingLeft
+            let relativeX = point.x - lineX
+            let strIndex = CTLineGetStringIndexForPosition(ctLine, CGPoint(x: relativeX, y: 0))
+            if strIndex != kCFNotFound {
+                return max(0, min(line.cells.count - 1, strIndex))
+            }
+        }
+        return max(0, Int((point.x - paddingLeft) / charWidth))
+    }
 
-            if let line = buffer.line(at: lineIdx),
-               let token = PathDetector.extractToken(on: line.trimmedText, at: col),
-               let detected = PathDetector.detectPath(candidate: token, cwd: getCwd()) {
-                hoveredPath = detected
-                if let range = line.trimmedText.range(of: token) {
-                    let startCol = line.trimmedText.distance(from: line.trimmedText.startIndex, to: range.lowerBound)
-                    let endCol = line.trimmedText.distance(from: line.trimmedText.startIndex, to: range.upperBound)
-                    hoveredLocation = (lineIdx, startCol..<endCol)
-                }
-                NSCursor.pointingHand.set()
-                needsDisplay = true
+    private func linkAt(point: NSPoint) -> (detected: DetectedPath, range: Range<Int>, lineIdx: Int)? {
+        let totalLines = buffer.totalLineCount
+        let bottomIndex = max(0, totalLines - 1 - scrollOffset)
+        let startIndex = max(0, bottomIndex - buffer.rows + 1)
+        let row = Int((point.y - paddingTop) / lineHeight)
+        guard row >= 0 && row < buffer.rows else { return nil }
+        let lineIdx = startIndex + row
+        guard let line = buffer.line(at: lineIdx) else { return nil }
+
+        let col = logicalColumn(for: point, line: line, lineIdx: lineIdx)
+
+        // 1. Check explicit OSC 8 hyperlink on the cell
+        if let linkInfo = line.hyperlink(at: col) {
+            let detected = PathDetector.detectPath(candidate: linkInfo.url, cwd: getCwd())
+                ?? DetectedPath(rawText: linkInfo.url, type: .webURL(url: URL(string: linkInfo.url) ?? URL(fileURLWithPath: linkInfo.url)), lineNumber: nil, columnNumber: nil)
+            return (detected: detected, range: linkInfo.range, lineIdx: lineIdx)
+        }
+
+        // 2. Check text-based links (Markdown [text](url), raw URLs, file paths)
+        if let match = PathDetector.findLink(on: line.trimmedText, at: col, cwd: getCwd()) {
+            return (detected: match.detected, range: match.range, lineIdx: lineIdx)
+        }
+
+        return nil
+    }
+
+    private func openDetectedURL(_ url: URL) {
+        if NSWorkspace.shared.open(url) {
+            return
+        }
+        if url.isFileURL {
+            let cleanURL = URL(fileURLWithPath: url.path)
+            if NSWorkspace.shared.open(cleanURL) {
                 return
             }
+            NSWorkspace.shared.activateFileViewerSelecting([cleanURL])
+        }
+    }
+
+    private func revealURLInFinder(_ url: URL) {
+        let target = url.isFileURL ? URL(fileURLWithPath: url.path) : url
+        NSWorkspace.shared.activateFileViewerSelecting([target])
+    }
+
+    // MARK: - Mouse Events, Hover & Clicking
+
+    override public func mouseMoved(with event: NSEvent) {
+        let pt = convert(event.locationInWindow, from: nil)
+        if let linkMatch = linkAt(point: pt) {
+            hoveredPath = linkMatch.detected
+            hoveredLocation = (lineIdx: linkMatch.lineIdx, range: linkMatch.range)
+            NSCursor.pointingHand.set()
+            needsDisplay = true
+            return
         }
 
         if hoveredPath != nil {
@@ -936,7 +990,17 @@ public final class TerminalView: NSView {
 
     override public func flagsChanged(with event: NSEvent) {
         super.flagsChanged(with: event)
-        if !event.modifierFlags.contains(.command) && hoveredPath != nil {
+        let pt = convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
+        if bounds.contains(pt) {
+            if let linkMatch = linkAt(point: pt) {
+                hoveredPath = linkMatch.detected
+                hoveredLocation = (lineIdx: linkMatch.lineIdx, range: linkMatch.range)
+                NSCursor.pointingHand.set()
+                needsDisplay = true
+                return
+            }
+        }
+        if hoveredPath != nil {
             hoveredPath = nil
             hoveredLocation = nil
             NSCursor.iBeam.set()
@@ -946,26 +1010,30 @@ public final class TerminalView: NSView {
 
     override public func mouseDown(with event: NSEvent) {
         let pt = convert(event.locationInWindow, from: nil)
-        let row = Int((pt.y - paddingTop) / lineHeight)
-        let col = max(0, Int((pt.x - paddingLeft) / charWidth))
+        mouseDownLocation = pt
+        pendingClickedLink = nil
+
         let totalLines = buffer.totalLineCount
         let bottomIndex = max(0, totalLines - 1 - scrollOffset)
         let startIndex = max(0, bottomIndex - buffer.rows + 1)
+        let row = Int((pt.y - paddingTop) / lineHeight)
         let lineIdx = startIndex + row
+        let col = max(0, Int((pt.x - paddingLeft) / charWidth))
 
-        // Check Cmd + Click to open file/URL or reveal in Finder
+        // Check Cmd + Click to open immediately (or Cmd+Option to reveal in Finder)
         if event.modifierFlags.contains(.command) {
-            if let line = buffer.line(at: lineIdx),
-               let token = PathDetector.extractToken(on: line.trimmedText, at: col),
-               let detected = PathDetector.detectPath(candidate: token, cwd: getCwd()) {
+            if let linkMatch = linkAt(point: pt) {
                 if event.modifierFlags.contains(.option) {
-                    // Cmd + Option + Click -> Reveal in Finder
-                    NSWorkspace.shared.activateFileViewerSelecting([detected.targetURL])
+                    revealURLInFinder(linkMatch.detected.targetURL)
                 } else {
-                    // Cmd + Click -> Open in Default Application / Browser
-                    NSWorkspace.shared.open(detected.targetURL)
+                    openDetectedURL(linkMatch.detected.targetURL)
                 }
                 return
+            }
+        } else {
+            // Normal click: record candidate link to open on mouseUp (unless dragged for text selection)
+            if let linkMatch = linkAt(point: pt) {
+                pendingClickedLink = linkMatch.detected
             }
         }
 
@@ -977,8 +1045,11 @@ public final class TerminalView: NSView {
     }
 
     override public func mouseDragged(with event: NSEvent) {
-        guard isSelecting else { return }
         let pt = convert(event.locationInWindow, from: nil)
+        if hypot(pt.x - mouseDownLocation.x, pt.y - mouseDownLocation.y) > 4.0 {
+            pendingClickedLink = nil
+        }
+        guard isSelecting else { return }
         let row = Int((pt.y - paddingTop) / lineHeight)
         let col = max(0, Int((pt.x - paddingLeft) / charWidth))
         let totalLines = buffer.totalLineCount
@@ -992,37 +1063,36 @@ public final class TerminalView: NSView {
 
     override public func mouseUp(with event: NSEvent) {
         isSelecting = false
+        if let link = pendingClickedLink {
+            pendingClickedLink = nil
+            openDetectedURL(link.targetURL)
+        }
     }
 
     // Contextual Right-Click Menu
     override public func menu(for event: NSEvent) -> NSMenu? {
         let pt = convert(event.locationInWindow, from: nil)
-        let row = Int((pt.y - paddingTop) / lineHeight)
-        let col = max(0, Int((pt.x - paddingLeft) / charWidth))
-        let totalLines = buffer.totalLineCount
-        let bottomIndex = max(0, totalLines - 1 - scrollOffset)
-        let startIndex = max(0, bottomIndex - buffer.rows + 1)
-        let lineIdx = startIndex + row
-
         let contextMenu = NSMenu(title: "Terminal")
 
-        if let line = buffer.line(at: lineIdx),
-           let token = PathDetector.extractToken(on: line.trimmedText, at: col),
-           let detected = PathDetector.detectPath(candidate: token, cwd: getCwd()) {
-            let openItem = NSMenuItem(title: "Open \"\(token)\"", action: #selector(contextOpenPath(_:)), keyEquivalent: "")
+        if let linkMatch = linkAt(point: pt) {
+            let detected = linkMatch.detected
+            let displayTitle = detected.label ?? (detected.targetURL.isFileURL ? detected.targetURL.lastPathComponent : detected.targetURL.absoluteString)
+            let openItem = NSMenuItem(title: "Open \"\(displayTitle)\"", action: #selector(contextOpenPath(_:)), keyEquivalent: "")
             openItem.representedObject = detected.targetURL
             openItem.target = self
             contextMenu.addItem(openItem)
 
-            let revealItem = NSMenuItem(title: "Reveal in Finder", action: #selector(contextRevealPath(_:)), keyEquivalent: "")
-            revealItem.representedObject = detected.targetURL
-            revealItem.target = self
-            contextMenu.addItem(revealItem)
+            if detected.targetURL.isFileURL {
+                let revealItem = NSMenuItem(title: "Reveal in Finder", action: #selector(contextRevealPath(_:)), keyEquivalent: "")
+                revealItem.representedObject = detected.targetURL
+                revealItem.target = self
+                contextMenu.addItem(revealItem)
+            }
 
-            let copyPathItem = NSMenuItem(title: "Copy Path", action: #selector(contextCopyPath(_:)), keyEquivalent: "")
-            copyPathItem.representedObject = detected.targetURL.path
-            copyPathItem.target = self
-            contextMenu.addItem(copyPathItem)
+            let copyItem = NSMenuItem(title: "Copy Link", action: #selector(contextCopyPath(_:)), keyEquivalent: "")
+            copyItem.representedObject = detected.targetURL.absoluteString
+            copyItem.target = self
+            contextMenu.addItem(copyItem)
 
             contextMenu.addItem(NSMenuItem.separator())
         }
@@ -1038,13 +1108,13 @@ public final class TerminalView: NSView {
 
     @objc private func contextOpenPath(_ sender: NSMenuItem) {
         if let url = sender.representedObject as? URL {
-            NSWorkspace.shared.open(url)
+            openDetectedURL(url)
         }
     }
 
     @objc private func contextRevealPath(_ sender: NSMenuItem) {
         if let url = sender.representedObject as? URL {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
+            revealURLInFinder(url)
         }
     }
 

@@ -10,6 +10,7 @@ public final class ANSIParser {
         case escape
         case csi
         case osc
+        case oscEscape
         case charset
     }
 
@@ -108,6 +109,8 @@ public final class ANSIParser {
             case "c": // Reset
                 buffer.reset()
                 state = .ground
+            case "\\": // String Terminator (ST) outside OSC
+                state = .ground
             default:
                 state = .ground
             }
@@ -125,11 +128,30 @@ public final class ANSIParser {
             }
 
         case .osc:
-            if char == "\u{07}" || char == "\u{1B}" {
+            if char == "\u{07}" { // BEL terminator
                 handleOSC(command: oscBuffer)
+                oscBuffer = ""
                 state = .ground
+            } else if char == "\u{1B}" { // ESC (possible start of ST: ESC \)
+                state = .oscEscape
             } else {
                 oscBuffer.append(char)
+            }
+
+        case .oscEscape:
+            if char == "\\" { // ST terminator complete (ESC \)
+                handleOSC(command: oscBuffer)
+                oscBuffer = ""
+                state = .ground
+            } else if char == "\u{1B}" {
+                handleOSC(command: oscBuffer)
+                oscBuffer = ""
+                state = .escape
+            } else {
+                handleOSC(command: oscBuffer)
+                oscBuffer = ""
+                state = .ground
+                processCharacter(char)
             }
         }
     }
@@ -351,6 +373,24 @@ public final class ANSIParser {
     }
 
     private func handleOSC(command: String) {
+        if command.hasPrefix("8;") {
+            let rest = command.dropFirst(2)
+            let linkParts = rest.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+            if linkParts.count >= 2 {
+                let params = String(linkParts[0])
+                let uri = String(linkParts[1])
+                let linkId = parseOSC8Id(params: params)
+                if uri.isEmpty {
+                    buffer.setActiveHyperlink(url: nil, id: nil)
+                } else {
+                    buffer.setActiveHyperlink(url: uri, id: linkId)
+                }
+            } else if linkParts.count == 1 && linkParts[0].isEmpty {
+                buffer.setActiveHyperlink(url: nil, id: nil)
+            }
+            return
+        }
+
         let parts = command.split(separator: ";", maxSplits: 1)
         if parts.count == 2 {
             let code = parts[0]
@@ -359,5 +399,16 @@ public final class ANSIParser {
                 buffer.setTitle(value)
             }
         }
+    }
+
+    private func parseOSC8Id(params: String) -> String? {
+        guard !params.isEmpty else { return nil }
+        for pair in params.split(separator: ":") {
+            let kv = pair.split(separator: "=", maxSplits: 1)
+            if kv.count == 2 && kv[0] == "id" {
+                return String(kv[1])
+            }
+        }
+        return nil
     }
 }

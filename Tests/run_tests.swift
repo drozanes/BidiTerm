@@ -452,6 +452,130 @@ struct TestsRunner {
 
         print("  -> In-line ANSI character insertion (CSI @) and deletion (CSI P) verified without character jumping!")
 
+        // Test 16: OSC 8 Hyperlink Parsing & TerminalCell Attachment
+        print("[Test 16] Testing OSC 8 Hyperlink Parsing & TerminalCell Attachment...")
+        let oscBuffer = TerminalBuffer(cols: 80, rows: 24)
+        let oscParser = ANSIParser(buffer: oscBuffer)
+
+        // Feed OSC 8 with ST (\e\) terminator
+        let osc8ST = "\u{1B}]8;;https://example.com\u{1B}\\Example\u{1B}]8;;\u{1B}\\ Plain"
+        oscParser.feed(data: osc8ST.data(using: .utf8)!)
+
+        let oscLine0 = oscBuffer.line(at: 0)!
+        assert(oscLine0.trimmedText == "Example Plain", "Text must match without stray backslashes or escape codes")
+
+        // First 7 chars ("Example") must have the hyperlink URL
+        for c in 0..<7 {
+            assert(oscLine0.cells[c].hyperlinkURL == "https://example.com", "Character at col \(c) must have active hyperlink URL")
+        }
+        // Characters after closing OSC 8 (" Plain") must have NO hyperlink
+        for c in 7..<13 {
+            assert(oscLine0.cells[c].hyperlinkURL == nil, "Character at col \(c) must have no hyperlink")
+        }
+
+        // Test TerminalLine.hyperlink(at:) query
+        let queriedLink = oscLine0.hyperlink(at: 3)
+        assert(queriedLink != nil, "Querying link at col 3 should succeed")
+        assert(queriedLink?.url == "https://example.com", "Queried link URL must match")
+        assert(queriedLink?.range == 0..<7, "Queried link range must cover 'Example' (0..<7)")
+
+        let emptyQuery = oscLine0.hyperlink(at: 9)
+        assert(emptyQuery == nil, "Querying plain text col 9 must return nil")
+
+        // Feed OSC 8 with BEL (\a) terminator and id parameter
+        let osc8BEL = "\r\n\u{1B}]8;id=item42;file:///Users/drozanes/test.txt\u{07}Local File\u{1B}]8;;\u{07}"
+        oscParser.feed(data: osc8BEL.data(using: .utf8)!)
+
+        let oscLine1 = oscBuffer.line(at: 1)!
+        assert(oscLine1.trimmedText == "Local File")
+        let queriedBEL = oscLine1.hyperlink(at: 2)
+        assert(queriedBEL?.url == "file:///Users/drozanes/test.txt")
+        assert(queriedBEL?.id == "item42")
+        assert(queriedBEL?.range == 0..<10)
+
+        // Verify buffer.reset() clears active hyperlink state
+        oscParser.feed(data: "\u{1B}]8;;https://neverclosed.com\u{1B}\\Start".data(using: .utf8)!)
+        assert(oscBuffer.activeHyperlinkURL == "https://neverclosed.com")
+        oscBuffer.reset()
+        assert(oscBuffer.activeHyperlinkURL == nil)
+        print("  -> OSC 8 hyperlink sequences (both ST and BEL terminators, params/id, and range tracking) verified!")
+
+        // Test 17: file:// URI & Line/Column Number Detection
+        print("[Test 17] Testing file:// URI & Line/Column Number Detection...")
+        let packagePath = "/Users/drozanes/Dev/BidiTerm/Package.swift"
+
+        // Standard file URL
+        let detectedFileURL = PathDetector.detectPath(candidate: "file://\(packagePath)")
+        assert(detectedFileURL != nil, "file:// URI must be detected")
+        assert(detectedFileURL?.targetURL.path == packagePath)
+        if case .file = detectedFileURL!.type {} else { fatalError("Should be .file") }
+
+        // File URL with #L10 fragment
+        let withFrag = PathDetector.detectPath(candidate: "file://\(packagePath)#L10")
+        assert(withFrag != nil)
+        assert(withFrag?.lineNumber == 10, "Line number 10 must be extracted from #L10")
+        assert(withFrag?.targetURL.path == packagePath)
+
+        // File URL with #L10-L25 range fragment
+        let withRangeFrag = PathDetector.detectPath(candidate: "file://\(packagePath)#L10-L25")
+        assert(withRangeFrag?.lineNumber == 10, "First line number 10 must be extracted from range")
+
+        // File URL with :15:4 line:col suffix
+        let withColonSuffix = PathDetector.detectPath(candidate: "file://\(packagePath):15:4")
+        assert(withColonSuffix?.lineNumber == 15 && withColonSuffix?.columnNumber == 4, "Line and column numbers parsed from colon suffix")
+
+        // Directory file URL
+        let dirURL = PathDetector.detectPath(candidate: "file:///Users/drozanes/Dev/BidiTerm")
+        assert(dirURL != nil)
+        if case .directory = dirURL!.type {} else { fatalError("Should be .directory") }
+        print("  -> file:// URIs, line/column fragments (#L10, #L10-L20, :15:4), and file/directory classification verified!")
+
+        // Test 18: Markdown Link Syntax [label](destination) Hit-Testing & Resolution
+        print("[Test 18] Testing Markdown Link Syntax Hit-Testing & Resolution...")
+        let mdLine = "Check out [צפייה בלוג הסוכן](file:///Users/drozanes/test.jsonl#L42) for details."
+
+        // Hit-test on the Hebrew label
+        let labelHit = PathDetector.findLink(on: mdLine, at: 15)
+        assert(labelHit != nil, "Clicking/hovering on Hebrew label inside markdown link must find the link")
+        assert(labelHit?.detected.label == "צפייה בלוג הסוכן", "Label must match Hebrew text")
+        assert(labelHit?.detected.lineNumber == 42, "Line number must be parsed from destination")
+        assert(labelHit?.detected.targetURL.path == "/Users/drozanes/test.jsonl")
+
+        // Hit-test on the URL destination part
+        let destHit = PathDetector.findLink(on: mdLine, at: 45)
+        assert(destHit != nil, "Clicking/hovering on destination URL part must find the link")
+        assert(destHit?.detected.targetURL.path == "/Users/drozanes/test.jsonl")
+
+        // Hit-test outside the link
+        let outsideHit = PathDetector.findLink(on: mdLine, at: 2)
+        assert(outsideHit == nil, "Clicking outside the markdown link must return nil")
+
+        // Markdown web link
+        let mdWeb = "Repository at [BidiTerm](https://github.com/drozanes/BidiTerm)"
+        let webHit = PathDetector.findLink(on: mdWeb, at: 17)
+        assert(webHit != nil)
+        assert(webHit?.detected.label == "BidiTerm")
+        assert(webHit?.detected.targetURL.absoluteString == "https://github.com/drozanes/BidiTerm")
+        print("  -> Markdown link syntax [label](destination) hit-testing on Hebrew and English labels verified!")
+
+        // Test 19: Raw URL Detection & Trailing Punctuation Stripping
+        print("[Test 19] Testing Raw URL Detection & Trailing Punctuation Stripping...")
+        let textWithPeriod = "Visit https://github.com/drozanes/BidiTerm."
+        let hitPeriod = PathDetector.findLink(on: textWithPeriod, at: 12)
+        assert(hitPeriod != nil)
+        assert(hitPeriod?.detected.targetURL.absoluteString == "https://github.com/drozanes/BidiTerm", "Trailing period must be stripped from URL")
+
+        let textWithParens = "Source code (https://example.com/repo)"
+        let hitParens = PathDetector.findLink(on: textWithParens, at: 20)
+        assert(hitParens != nil)
+        assert(hitParens?.detected.targetURL.absoluteString == "https://example.com/repo", "Trailing closing paren must be stripped when unbalanced")
+
+        let wikiURL = "See https://en.wikipedia.org/wiki/Terminal_(telecommunication)"
+        let hitWiki = PathDetector.findLink(on: wikiURL, at: 10)
+        assert(hitWiki != nil)
+        assert(hitWiki?.detected.targetURL.absoluteString == "https://en.wikipedia.org/wiki/Terminal_(telecommunication)", "Balanced closing paren in Wikipedia URL must be preserved")
+        print("  -> Raw URL extraction, punctuation stripping, and balanced parenthesis retention verified!")
+
         print("========================================")
         print("ALL TESTS PASSED! Engine is verified.")
         print("========================================")

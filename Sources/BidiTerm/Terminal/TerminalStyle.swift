@@ -28,10 +28,14 @@ public struct TerminalStyle: Equatable {
 public struct TerminalCell: Equatable {
     public var char: Character
     public var style: TerminalStyle
+    public var hyperlinkURL: String?
+    public var hyperlinkId: String?
 
-    public init(char: Character = " ", style: TerminalStyle = .default) {
+    public init(char: Character = " ", style: TerminalStyle = .default, hyperlinkURL: String? = nil, hyperlinkId: String? = nil) {
         self.char = char
         self.style = style
+        self.hyperlinkURL = hyperlinkURL
+        self.hyperlinkId = hyperlinkId
     }
 }
 

@@ -43,6 +43,22 @@ public final class TerminalLine {
         }
         return res
     }
+
+    /// Returns the hyperlink at a given column, along with the full column range [start..<end] of that hyperlink on this line.
+    public func hyperlink(at col: Int) -> (url: String, id: String?, range: Range<Int>)? {
+        guard col >= 0 && col < cells.count, let url = cells[col].hyperlinkURL, !url.isEmpty else { return nil }
+        let id = cells[col].hyperlinkId
+
+        var start = col
+        while start > 0 && cells[start - 1].hyperlinkURL == url && cells[start - 1].hyperlinkId == id {
+            start -= 1
+        }
+        var end = col
+        while end < cells.count - 1 && cells[end + 1].hyperlinkURL == url && cells[end + 1].hyperlinkId == id {
+            end += 1
+        }
+        return (url: url, id: id, range: start..<(end + 1))
+    }
 }
 
 public protocol TerminalBufferDelegate: AnyObject {
@@ -72,9 +88,16 @@ public final class TerminalBuffer {
 
     // State
     public var activeStyle: TerminalStyle = .default
+    public var activeHyperlinkURL: String? = nil
+    public var activeHyperlinkId: String? = nil
     public var cursorVisible: Bool = true
     public var bracketedPasteMode: Bool = false
     public var windowTitle: String = "BidiTerm"
+
+    public func setActiveHyperlink(url: String?, id: String?) {
+        self.activeHyperlinkURL = url
+        self.activeHyperlinkId = id
+    }
 
     public init(cols: Int = 80, rows: Int = 24, maxScrollback: Int = 5000) {
         self.cols = cols
@@ -95,6 +118,8 @@ public final class TerminalBuffer {
         isUsingAltBuffer = false
 
         activeStyle = .default
+        activeHyperlinkURL = nil
+        activeHyperlinkId = nil
         cursorVisible = true
         bracketedPasteMode = false
     }
@@ -204,7 +229,12 @@ public final class TerminalBuffer {
         let line = activeLines[lineIdx]
         line.ensureCapacity(cols)
         if cursorCol < line.cells.count {
-            line.cells[cursorCol] = TerminalCell(char: ch, style: activeStyle)
+            line.cells[cursorCol] = TerminalCell(
+                char: ch,
+                style: activeStyle,
+                hyperlinkURL: activeHyperlinkURL,
+                hyperlinkId: activeHyperlinkId
+            )
             line.invalidateCache()
         }
 
